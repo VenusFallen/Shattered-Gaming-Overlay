@@ -20,18 +20,23 @@ See `.claude/agents/engine-agent.md` for the full rationale and hard rules.
 
 ## Planned modules
 
-- **Overlay** — always-on-top HUD: hardware/FPS stats and an accessibility crosshair/visual aid. Rendered as a separate, non-injecting DirectComposition window — never a hook into the game's own swap chain.
+- **Overlay** — toggleable, passive HUD elements over the game: hardware/FPS stats, an accessibility crosshair/visual aid, and module status indicators. Rendered as a separate, non-injecting, click-through DirectComposition window — never a hook into the game's own swap chain, and never interactive.
 - **Remapper** — remap any key/button to any other key/button.
 - **Macros** — record/playback sequences (Once / Hold / Toggle), with humanized timing on playback.
 - **Profiles** — save/load/delete named per-game configurations.
-- **Active window selection** — target modules at a specific running game, or leave global.
+- **Active window selection** — target a specific running game, or leave global. When a process is selected, Remapper and Macros go inert the instant that process loses focus (so they never reach into the rest of your PC while you're alt-tabbed away) — but the HUD overlay stays visible regardless of focus, so you can tune it live from the Companion window.
 - **Updates** — in-app self-update against GitHub Releases.
 
 ---
 
 ## Architecture
 
-Single UI stack: **DX11 + Dear ImGui + DirectComposition**, for both the HUD overlay and the settings panels — no PySide6/Qt/Tkinter. See `.claude/agents/ui-agent.md` for the compositing details.
+This is companion software, not an in-game menu — unlike R9Tools, no configuration UI ever draws on top of the game. Two windows, one UI toolkit:
+
+- **Companion window** — the main application window. All configuration lives here (Remapper, Macros, Profiles, Window Select, Overlay toggles, Updates, theming) — a normal desktop window with normal OS chrome, the way you'd interact with Discord's client or MSI Afterburner's main window.
+- **HUD overlay** — a separate, click-through, non-interactive layer that only renders whatever's been toggled on in the Companion window's Overlay panel. It has no menus and never receives input.
+
+Both windows are built with the same toolkit family — **Dear ImGui** — no PySide6/Qt/Tkinter. The Companion window currently runs on `imgui_bundle`'s OpenGL3 backend (the published wheel doesn't ship DX11 support; a from-source rebuild with a C++ toolchain is the known path to real DX11 later, if OpenGL3 ever proves insufficient). The HUD overlay will need its own hand-rolled DX11 + DirectComposition swap chain regardless, since that's outside what any Hello ImGui backend provides. See `.claude/agents/ui-agent.md` for the full detail.
 
 ## Agent team
 
@@ -40,7 +45,7 @@ This repo is developed with a small team of scoped Claude Code agents (`.claude/
 | Agent | Owns |
 | --- | --- |
 | `engine-agent` | Input capture/injection, remapper, macro engine, profiles, active-window selection |
-| `ui-agent` | HUD overlay rendering, settings panels, theming |
+| `ui-agent` | Companion window (all settings panels), HUD overlay rendering, theming |
 | `build-agent` | Packaging, versioning, self-updater |
 | `qa-agent` | Verification gate — tests, cross-file contracts, flags what needs live/manual confirmation |
 

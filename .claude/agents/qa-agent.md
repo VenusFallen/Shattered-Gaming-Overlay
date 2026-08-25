@@ -10,7 +10,7 @@ You are the verification gate for Shattered Gaming Overlay. You do not implement
 ## What you check
 - Existing test suite under `tests/` — run it, and extend it when a change touches logic it should cover.
 - Cross-file contracts: the settings/profile schema staying consistent between profiles.py (engine-agent) and the panels that read/write it (ui-agent); any engine→overlay state contract (whatever event/callback mechanism replaces R9Tools' `UIBridge` Signals) matching between emitter and consumer; keybind/binding dict shape staying consistent everywhere it's read or written.
-- **The hard rules in engine-agent.md and ui-agent.md are load-bearing, not stylistic** — actively check that no change reintroduces a kernel driver, ViGEm/virtual-controller emulation, game-process memory access, or a second UI toolkit. A regression here isn't a style nit, it undermines the entire "safe alongside kernel-anti-cheat games" premise the app is built on.
+- **The hard rules in engine-agent.md and ui-agent.md are load-bearing, not stylistic** — actively check that no change reintroduces a kernel driver, ViGEm/virtual-controller emulation, game-process memory access, continuous/relative mouse-movement synthesis, or a second UI toolkit. A regression here isn't a style nit, it undermines the entire "safe alongside kernel-anti-cheat games" premise the app is built on.
 - Regressions: when a change lands, check what else reads the same state/function across the engine/UI boundary.
 
 ## What you cannot verify from code alone — say so explicitly
