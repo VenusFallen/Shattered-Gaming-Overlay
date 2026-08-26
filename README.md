@@ -16,8 +16,6 @@ Shattered Gaming Overlay instead uses pure user-mode Win32 APIs — the same tec
 
 This keeps the project scoped to what it actually is — an accessibility tool, not a low-level system hook — and it's what lets Shattered Gaming Overlay be used with a much wider range of games than R9Tools could.
 
-See `.claude/agents/engine-agent.md` for the full rationale and hard rules.
-
 ---
 
 ## Planned modules
@@ -38,19 +36,8 @@ This is companion software, not an in-game menu — unlike R9Tools, no configura
 - **Companion window** — the main application window. All configuration lives here (Remapper, Macros, Profiles, Window Select, Overlay toggles, Updates, theming) — a normal desktop window with normal OS chrome, the way you'd interact with Discord's client or MSI Afterburner's main window.
 - **HUD overlay** — a separate, click-through, non-interactive layer that only renders whatever's been toggled on in the Companion window's Overlay panel. It has no menus and never receives input.
 
-Both windows are built with the same toolkit family — **Dear ImGui** — no PySide6/Qt/Tkinter. The Companion window currently runs on `imgui_bundle`'s OpenGL3 backend (the published wheel doesn't ship DX11 support; a from-source rebuild with a C++ toolchain is the known path to real DX11 later, if OpenGL3 ever proves insufficient). The HUD overlay will need its own hand-rolled DX11 + DirectComposition swap chain regardless, since that's outside what any Hello ImGui backend provides. See `.claude/agents/ui-agent.md` for the full detail.
-
-## Agent team
-
-This repo is developed with a small team of scoped Claude Code agents (`.claude/agents/`):
-
-| Agent | Owns |
-| --- | --- |
-| `engine-agent` | Input capture/injection, remapper, macro engine, profiles, active-window selection |
-| `ui-agent` | Companion window (all settings panels), HUD overlay rendering, theming |
-| `build-agent` | Packaging, versioning, self-updater |
-| `qa-agent` | Verification gate — tests, cross-file contracts, flags what needs live/manual confirmation |
+Both windows are built with the same toolkit family — **Dear ImGui** — no PySide6/Qt/Tkinter. The Companion window currently runs on `imgui_bundle`'s OpenGL3 backend (the published wheel doesn't ship DX11 support; a from-source rebuild with a C++ toolchain is the known path to real DX11 later, if OpenGL3 ever proves insufficient). The HUD overlay uses its own hand-rolled DX11 + DirectComposition swap chain, since that's outside what any Hello ImGui backend provides.
 
 ## Status
 
-Early scaffolding — architecture and agent team defined; module implementation not yet started.
+In active development by a solo developer. Built so far: the Companion window (Dashboard, Remapper, Macros, Profiles, Window Select, Overlay, Settings, About), the user-mode input capture/injection layer, real window/process targeting, and the first working piece of the HUD overlay (the accessibility crosshair). Remapper/macro execution, profile persistence, and packaging are still ahead.
