@@ -1,18 +1,20 @@
 # Shattered Gaming Overlay
 
-A gaming accessibility overlay for Windows. Built entirely on user-mode input APIs — no kernel driver, no virtual controller — so it can run alongside kernel-anti-cheat-protected games (Escape from Tarkov, Battlefield 6, Call of Duty).
+A gaming accessibility overlay for Windows. Built entirely on user-mode input APIs — no kernel driver, no virtual controller — so it stays a pure accessibility tool, compatible with a much wider range of games than its predecessor.
 
 ---
 
 ## Why no driver
 
-Its predecessor project (R9Tools) used the [Interception](https://github.com/oblitum/Interception) kernel driver for input. That's a kernel filter driver, visible to any kernel-level anti-cheat scan — fine for a personal aim-assist tool, not acceptable for an accessibility app meant to run alongside BattlEye/EAC-protected titles.
+Its predecessor project (R9Tools) used the [Interception](https://github.com/oblitum/Interception) kernel driver for input. A kernel-mode driver is a heavier, more invasive approach than an accessibility tool actually needs, and it narrows the games it can be used with.
 
 Shattered Gaming Overlay instead uses pure user-mode Win32 APIs — the same technique AutoHotkey uses:
 
 - **Capture** — `SetWindowsHookEx` (`WH_KEYBOARD_LL` / `WH_MOUSE_LL`) or the Raw Input API.
 - **Injection** — `SendInput`.
 - **Never**: a kernel-mode driver, ViGEm/virtual-controller emulation, or any read/write into a game process's memory.
+
+This keeps the project scoped to what it actually is — an accessibility tool, not a low-level system hook — and it's what lets Shattered Gaming Overlay be used with a much wider range of games than R9Tools could.
 
 See `.claude/agents/engine-agent.md` for the full rationale and hard rules.
 

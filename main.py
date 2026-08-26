@@ -27,21 +27,26 @@ does not enable, regardless of OS. Requesting `direct_x11` here raises
 therefore runs on `RendererBackendType.open_gl3` instead, which IS compiled
 in. This has no bearing on the project's anti-cheat safety properties --
 the Companion window is an ordinary desktop window that never touches a
-game process either way -- and it does not block the future HUD overlay,
-which per ui-agent.md needs a hand-rolled DirectComposition swap chain via
-ctypes regardless of what Hello ImGui's backend selector supports. See the
-task report for the full explanation and the options if true DX11 parity
-is wanted later (building imgui_bundle from source with
+game process either way -- and it does not block the HUD overlay (see
+hud_overlay.py), which per ui-agent.md needs a hand-rolled DirectComposition
+swap chain via ctypes regardless of what Hello ImGui's backend selector
+supports. See the task report for the full explanation and the options if
+true DX11 parity is wanted later (building imgui_bundle from source with
 `-DHELLOIMGUI_HAS_DIRECTX11=ON`).
 
-This is NOT the HUD overlay -- that is a separate, click-through,
-DirectComposition-backed, non-injecting window described in
-.claude/agents/ui-agent.md, and is future work not built here.
+This module also starts/stops the HUD overlay's own background thread
+(hud_overlay.py) alongside the Companion window's lifecycle -- but the HUD
+overlay itself is a separate, click-through, DirectComposition-backed,
+non-injecting window described in .claude/agents/ui-agent.md, entirely
+distinct from the Companion window built below. Nothing about the HUD
+overlay is rendered as part of this window's own ImGui frame.
 """
 
 from __future__ import annotations
 
+import ctypes
 import sys
+from pathlib import Path
 
 from imgui_bundle import hello_imgui as hi
 from imgui_bundle import imgui
@@ -50,11 +55,33 @@ from imgui_bundle import immapp
 import shell
 import theme as theme_module
 from app_state import new_app_state
+from hud_overlay import hud_overlay
 from key_capture import capture_service
 from version import WINDOW_TITLE
 
 if not sys.platform.startswith("win"):
     raise SystemExit("Shattered Gaming Overlay's Companion window is Windows-only.")
+
+_ICON_PATH = Path(__file__).resolve().parent / "assets" / "icon.ico"
+
+
+def _set_window_icon() -> None:
+    # Hello ImGui's RunnerParams/AppWindowParams have no icon field at all
+    # (confirmed by introspection, same as the DX11 backend check above) --
+    # set it the plain Win32 way, reusing titlebar.py's FindWindowW-by-title
+    # lookup pattern since Hello ImGui doesn't hand back its own hwnd either.
+    if not _ICON_PATH.exists():
+        return
+    user32 = ctypes.windll.user32
+    IMAGE_ICON, LR_LOADFROMFILE, LR_DEFAULTSIZE = 1, 0x0010, 0x0040
+    WM_SETICON, ICON_BIG, ICON_SMALL = 0x0080, 1, 0
+    hwnd = user32.FindWindowW(None, WINDOW_TITLE)
+    if not hwnd:
+        return
+    hicon = user32.LoadImageW(None, str(_ICON_PATH), IMAGE_ICON, 0, 0, LR_LOADFROMFILE | LR_DEFAULTSIZE)
+    if hicon:
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, hicon)
+        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, hicon)
 
 
 def _post_init() -> None:
@@ -63,12 +90,22 @@ def _post_init() -> None:
     # default for a companion app whose whole reason to exist is accessibility.
     io = imgui.get_io()
     io.config_flags |= imgui.ConfigFlags_.nav_enable_keyboard
+    _set_window_icon()
+    # Start the HUD overlay's own background thread + window alongside the
+    # Companion window. It starts idle (crosshair disabled by default, see
+    # app_state.CrosshairState) and stays running for the whole app
+    # lifetime -- per-frame update_crosshair() calls in _show_gui() below
+    # are what actually turn it on/off live.
+    hud_overlay.start()
 
 
 def _before_exit() -> None:
     # Tear down the bind-capture hook (if it was ever started) rather than
     # leaving it installed until process teardown.
     capture_service.shutdown()
+    # Stop the HUD overlay's thread/window/DX11+DComp resources cleanly so
+    # nothing outlives the Companion window's own process.
+    hud_overlay.stop()
 
 
 def main() -> None:
@@ -127,6 +164,13 @@ def main() -> None:
         # active right now (see the `background_color` comment above).
         iwp.background_color = theme_module.get_theme(app_state.settings.theme_name).bg_base
         shell.render_frame(app_state)
+        # Hand off the current crosshair state to the HUD overlay's render
+        # thread once per Companion-window frame -- see hud_overlay.py's
+        # module docstring for why this is a lock-guarded snapshot rather
+        # than sharing app_state.overlay.crosshair across the thread
+        # boundary directly. Cheap enough (a few float/str copies) to do
+        # unconditionally every frame rather than only on change.
+        hud_overlay.update_crosshair(app_state.overlay.crosshair)
 
     runner_params.callbacks.post_init = _post_init
     runner_params.callbacks.before_exit = _before_exit

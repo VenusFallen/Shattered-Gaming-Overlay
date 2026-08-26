@@ -8,3 +8,7 @@ profiles.json
 .venv/
 venv/
 *.log
+
+# Hello ImGui's per-window-title runtime geometry/layout cache (imgui.ini
+# equivalent) -- regenerated on launch, not source.
+*.ini

@@ -17,7 +17,10 @@ import widgets
 from panel_context import PanelContext
 
 _CORNERS = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"]
-_CROSSHAIR_STYLES = ["Cross", "Dot", "Circle", "T-Shape"]
+_CROSSHAIR_STYLES = ["Cross", "Dot", "Circle", "Circle + Dot", "T-Shape"]
+
+_PREVIEW_CARD = 64.0
+_PREVIEW_ICON_R = 20.0
 
 
 def _corner_combo(label: str, current: str) -> str:
@@ -25,6 +28,70 @@ def _corner_combo(label: str, current: str) -> str:
     imgui.set_next_item_width(160)
     changed, idx = imgui.combo(label, idx, _CORNERS)
     return _CORNERS[idx] if changed else current
+
+
+def _draw_crosshair_preview(draw_list, cx: float, cy: float, style: str, col: int) -> None:
+    """Small static icon of `style`, mirroring hud_overlay.py's real
+    _draw_crosshair layout (same gap/arm proportions) but without its black
+    readability outline -- these sit on a themed card background, not over
+    an arbitrary game frame, so the outline isn't needed here."""
+    r = _PREVIEW_ICON_R
+    gap = 3.0
+    thick = 2.0
+    p = imgui.ImVec2
+
+    if style == "Dot":
+        draw_list.add_circle_filled(p(cx, cy), r * 0.4, col)
+    elif style == "Circle":
+        draw_list.add_circle(p(cx, cy), r, col, thickness=thick)
+    elif style == "Circle + Dot":
+        draw_list.add_circle(p(cx, cy), r, col, thickness=thick)
+        draw_list.add_circle_filled(p(cx, cy), max(1.5, r * 0.15), col)
+    elif style == "T-Shape":
+        draw_list.add_line(p(cx - gap - r, cy), p(cx - gap, cy), col, thick)
+        draw_list.add_line(p(cx + gap, cy), p(cx + gap + r, cy), col, thick)
+        draw_list.add_line(p(cx, cy + gap), p(cx, cy + gap + r), col, thick)
+    else:  # Cross
+        draw_list.add_line(p(cx - gap - r, cy), p(cx - gap, cy), col, thick)
+        draw_list.add_line(p(cx + gap, cy), p(cx + gap + r, cy), col, thick)
+        draw_list.add_line(p(cx, cy - gap - r), p(cx, cy - gap), col, thick)
+        draw_list.add_line(p(cx, cy + gap), p(cx, cy + gap + r), col, thick)
+
+
+def _crosshair_style_picker(theme, current: str) -> str:
+    """Horizontal row of clickable preview cards -- replaces a plain
+    dropdown so the user can see what each style actually looks like before
+    picking it, rather than picking a name blind."""
+    new_style = current
+    draw_list = imgui.get_window_draw_list()
+    u32 = lambda rgba: imgui.color_convert_float4_to_u32(imgui.ImVec4(*rgba))  # noqa: E731
+
+    for i, style in enumerate(_CROSSHAIR_STYLES):
+        if i > 0:
+            imgui.same_line()
+        selected = style == current
+        imgui.push_id(f"chstyle-{style}")
+
+        pos = imgui.get_cursor_screen_pos()
+        p_max = imgui.ImVec2(pos.x + _PREVIEW_CARD, pos.y + _PREVIEW_CARD)
+        card_bg = theme.bg_input_active if selected else theme.bg_input
+        draw_list.add_rect_filled(pos, p_max, u32(card_bg), rounding=8.0)
+
+        icon_col = u32(theme.accent_text)
+        _draw_crosshair_preview(draw_list, pos.x + _PREVIEW_CARD / 2, pos.y + _PREVIEW_CARD / 2, style, icon_col)
+
+        clicked = imgui.invisible_button(f"##btn-{style}", imgui.ImVec2(_PREVIEW_CARD, _PREVIEW_CARD))
+        border_col = theme.accent if selected else theme.border
+        draw_list.add_rect(pos, p_max, u32(border_col), rounding=8.0, thickness=2.0 if selected else 1.0)
+
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(style)
+        imgui.pop_id()
+
+        if clicked:
+            new_style = style
+
+    return new_style
 
 
 def _render_stats_hud(ctx: PanelContext) -> None:
@@ -69,15 +136,14 @@ def _render_crosshair(ctx: PanelContext) -> None:
         if not s.enabled:
             return
         imgui.spacing()
-        idx = _CROSSHAIR_STYLES.index(s.style) if s.style in _CROSSHAIR_STYLES else 0
-        imgui.set_next_item_width(160)
-        changed, idx = imgui.combo("Style##crosshair", idx, _CROSSHAIR_STYLES)
-        if changed:
-            s.style = _CROSSHAIR_STYLES[idx]
+        widgets.muted_text(theme, "Style")
+        s.style = _crosshair_style_picker(theme, s.style)
+        imgui.spacing()
         imgui.set_next_item_width(200)
         _, s.size = imgui.slider_float("Size##crosshair", s.size, 4.0, 48.0, "%.0f px")
         imgui.set_next_item_width(200)
-        _, s.thickness = imgui.slider_float("Thickness##crosshair", s.thickness, 1.0, 8.0, "%.1f px")
+        _, thickness_int = imgui.slider_int("Thickness##crosshair", int(s.thickness), 1, 8, "%d px")
+        s.thickness = float(thickness_int)
         _, s.color = imgui.color_edit4("Color##crosshair", s.color)
 
 

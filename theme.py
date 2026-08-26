@@ -106,6 +106,15 @@ class Theme:
     item_inner_spacing: Tuple[float, float] = (8.0, 6.0)
     indent_spacing: float = 20.0
 
+    # --- optional brand gradient (decorative only, e.g. the sidebar header
+    # accent bar -- see shell.py) -- None on every theme except one that
+    # actually wants a rendered two-color gradient rather than a flat accent.
+    # Dear ImGui's style colors are flat per-element; this is the deliberate,
+    # narrow exception for the one spot a real gradient earns its place,
+    # rather than reworking every widget's color pipeline for it.
+    accent_gradient_start: RGBA | None = None
+    accent_gradient_end: RGBA | None = None
+
 
 DARK = Theme(
     name="dark",
@@ -282,7 +291,50 @@ DAYLIGHT = Theme(
     nav_hover_bg=(0.0, 0.0, 0.0, 0.06),
 )
 
-THEMES: Dict[str, Theme] = {t.name: t for t in (DARK, VIOLET, EMBER, SLATE, DAYLIGHT)}
+# Gradient -- computed ratios:
+#   text_primary/bg_base: 16.1:1 (AAA)  text_primary/bg_card: 14.2:1 (AAA)
+#   text_secondary/bg_base: 8.6:1 (AAA)  text_secondary/bg_card: 7.6:1 (AAA)
+#   text_disabled/bg_base: 3.6:1 (exempt)
+#   white text on accent(blue)/accent_hover(violet)/accent_active(red):
+#     5.5 / 6.2 / 5.2 :1 (AA -- accent_active's red was deliberately darkened
+#     from the icon's brighter #E03040 to #D02A3A specifically to clear AA
+#     with margin; the brighter red is still used for the purely decorative,
+#     non-text gradient bar below, which isn't held to a text contrast ratio)
+#   accent_text/bg_base: 8.7:1 (AAA)
+#   success/warning/danger/info on bg_base: 10.3 / 10.4 / 5.4 / 9.4 :1 (AA/AAA)
+# accent progresses blue (rest) -> violet (hover) -> red (active) using the
+# same red/blue family as the app icon, rather than one flat accent hue.
+GRADIENT = Theme(
+    name="gradient",
+    display_name="Gradient (Red/Blue)",
+    bg_base=hex_rgba("#15131C"),
+    bg_sidebar=hex_rgba("#100E15"),
+    bg_popup=hex_rgba("#1A1721", 0.98),
+    bg_card=hex_rgba("#251F2C", 0.90),
+    bg_card_hover=hex_rgba("#2B2433", 0.94),
+    bg_input=hex_rgba("#1C1822"),
+    bg_input_hover=hex_rgba("#231E2A"),
+    bg_input_active=hex_rgba("#28222F"),
+    border=hex_rgba("#372F42", 0.80),
+    border_strong=hex_rgba("#4A4058", 1.0),
+    text_primary=hex_rgba("#F2EEF7"),
+    text_secondary=hex_rgba("#B7AEC4"),
+    text_disabled=hex_rgba("#726A80"),
+    accent=hex_rgba("#385CE6"),
+    accent_hover=hex_rgba("#8C4693"),
+    accent_active=hex_rgba("#D02A3A"),
+    accent_text=hex_rgba("#C9A0FF"),
+    success=hex_rgba("#3DDC84"),
+    warning=hex_rgba("#F5B942"),
+    danger=hex_rgba("#F2555A"),
+    info=hex_rgba("#5FC6E8"),
+    nav_selected_bg=hex_rgba("#8C4693", 0.16),
+    nav_hover_bg=(1.0, 1.0, 1.0, 0.05),
+    accent_gradient_start=hex_rgba("#E03040"),  # matches the app icon's red
+    accent_gradient_end=hex_rgba("#385CE6"),    # matches the app icon's blue
+)
+
+THEMES: Dict[str, Theme] = {t.name: t for t in (DARK, VIOLET, EMBER, SLATE, DAYLIGHT, GRADIENT)}
 
 
 def get_theme(name: str) -> Theme:
@@ -292,6 +344,17 @@ def get_theme(name: str) -> Theme:
 
 def theme_names() -> list:
     return list(THEMES.keys())
+
+
+def gradient_endpoints(theme: Theme) -> Tuple[RGBA, RGBA]:
+    """(start, end) for the sidebar header's decorative gradient bar --
+    falls back to a flat `theme.accent` (start == end) for every theme that
+    doesn't define an explicit brand gradient, so the bar degrades to an
+    ordinary accent-colored rule rather than needing a special case at the
+    call site."""
+    start = theme.accent_gradient_start if theme.accent_gradient_start is not None else theme.accent
+    end = theme.accent_gradient_end if theme.accent_gradient_end is not None else theme.accent
+    return start, end
 
 
 def apply_theme(theme: Theme, ui_scale: float) -> None:

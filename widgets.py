@@ -113,9 +113,12 @@ def labeled_toggle(
 ) -> Tuple[bool, bool]:
     """Draw `[toggle switch]  Label` and return (changed, new_value).
 
-    The toggle itself draws on/off glyphs (ToggleFlags_.a11y) in addition to
-    knob position, and is always paired with a plain-text label placed after
-    it -- so state is never carried by color/position alone.
+    State is conveyed by knob position (a spatial cue, not a color-only one)
+    plus the plain-text label placed after it -- so state is never carried
+    by color alone. An earlier version also drew literal 1/0 glyphs on the
+    knob (ToggleFlags_.a11y) as a belt-and-suspenders accessibility signal,
+    but that duplicated what position already conveys and looked like a
+    rendering artifact -- removed per user feedback.
     """
     # Note: imgui_toggle.ToggleConstants exists in the bundled .pyi stub but
     # is not actually exported by the compiled module at runtime (confirmed
@@ -123,7 +126,7 @@ def labeled_toggle(
     # inlined here since there's nothing to import it from.
     _DEFAULT_ANIMATION_DURATION = 0.1
 
-    flags = imgui_toggle.ToggleFlags_.a11y
+    flags = imgui_toggle.ToggleFlags_.none
     if not reduce_motion:
         flags |= imgui_toggle.ToggleFlags_.animated
     animation_duration = 0.0 if reduce_motion else _DEFAULT_ANIMATION_DURATION

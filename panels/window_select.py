@@ -1,8 +1,9 @@
 """panels/window_select.py -- Target Window: pick a specific running process,
-or leave global. Purely UI state (app_state.WindowSelectState); the actual
-psutil/win32gui process enumeration and OS-focus tracking are engine-agent's
-future window_select.py -- this only holds the shape that enumeration will
-populate (`available`) and the current pick (`selected`).
+or leave global. Purely UI rendering over app_state.WindowSelectState; the
+actual psutil/win32 process enumeration and OS-focus tracking live in the
+root-level window_select.py (engine-agent's module -- same split as
+input_hooks.py/input_inject.py vs their panel files), wired in below via a
+single refresh_if_stale() call.
 
 Folded into the Settings panel as its own card (`render_section`) rather than
 a standalone top-level tab -- see shell.py's nav order.
@@ -14,12 +15,14 @@ from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
 import widgets
+import window_select
 from panel_context import PanelContext
 
 
 def render_section(ctx: PanelContext) -> None:
     theme = ctx.theme
     state = ctx.state.window_select
+    window_select.refresh_if_stale(state)
 
     with widgets.card(theme, "settings-window-select", size=(0, 0)):
         widgets.section_title("Target Window")

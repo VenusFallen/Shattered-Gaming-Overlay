@@ -58,7 +58,18 @@ def _render_sidebar(ctx: PanelContext) -> None:
     imgui.spacing()
     imgui.text_colored(theme.text_secondary, "Companion")
     imgui.spacing()
-    imgui.separator()
+
+    # Decorative brand-gradient bar in place of a plain separator -- a flat
+    # accent-colored rule on every theme except one that defines a real
+    # two-color gradient (see theme.gradient_endpoints).
+    start_rgba, end_rgba = theme_module.gradient_endpoints(theme)
+    bar_h = 3.0
+    p_min = imgui.get_cursor_screen_pos()
+    p_max = imgui.ImVec2(p_min.x + imgui.get_content_region_avail().x, p_min.y + bar_h)
+    col_start = imgui.color_convert_float4_to_u32(imgui.ImVec4(*start_rgba))
+    col_end = imgui.color_convert_float4_to_u32(imgui.ImVec4(*end_rgba))
+    imgui.get_window_draw_list().add_rect_filled_multi_color(p_min, p_max, col_start, col_end, col_end, col_start)
+    imgui.dummy(imgui.ImVec2(0, bar_h))
     imgui.spacing()
 
     # NOTE: imgui.selectable's `size` does NOT support the classic Dear ImGui
