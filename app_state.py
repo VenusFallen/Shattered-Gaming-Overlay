@@ -325,6 +325,11 @@ class SettingsState:
     # / `last_checked_display` are all written by updater.update_manager's
     # sync_to() call in main.py, never edited directly by any panel.
     check_for_updates_on_launch: bool = True
+    # Titlebar close-button behavior: True (default) hides to tray via
+    # titlebar.py's _close(), same as R9Tools' convention; False skips the
+    # tray entirely and exits the app outright. See titlebar.py's _close()
+    # docstring for the actual branch.
+    close_minimizes_to_tray: bool = True
     last_checked_display: str = "Never checked"
     update_status: UpdateStatus = UpdateStatus.IDLE
     update_latest_version: str = ""

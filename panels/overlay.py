@@ -115,7 +115,7 @@ def _render_stats_hud(ctx: PanelContext) -> None:
         s.corner = widgets.screen_position_picker(theme, "stats-position", s.corner)
         imgui.set_next_item_width(200)
         _, s.scale = imgui.slider_float("Scale##stats", s.scale, 0.5, 2.0, "%.2fx")
-        _, s.color = widgets.hex_color_picker(theme, "stats-color", "Text color", s.color)
+        _, s.color, _ = widgets.hex_color_picker(theme, "stats-color", "Text color", s.color)
         imgui.set_next_item_width(200)
         _, s.bg_alpha = imgui.slider_float("Background opacity##stats", s.bg_alpha, 0.0, 1.0, "%.2f")
 
@@ -139,7 +139,7 @@ def _render_crosshair(ctx: PanelContext) -> None:
         imgui.set_next_item_width(200)
         _, thickness_int = imgui.slider_int("Thickness##crosshair", int(s.thickness), 1, 8, "%d px")
         s.thickness = float(thickness_int)
-        _, s.color = widgets.hex_color_picker(theme, "crosshair-color", "Color", s.color)
+        _, s.color, _ = widgets.hex_color_picker(theme, "crosshair-color", "Color", s.color)
 
 
 def _render_status_indicators(ctx: PanelContext) -> None:

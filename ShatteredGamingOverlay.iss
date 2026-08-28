@@ -137,35 +137,42 @@ var
   Attempt: Integer;
   SettleDelayMs: Integer;
 begin
-  SettleDelayMs := 2000;
+  // Launched exactly ONCE. An earlier version of this procedure called
+  // Exec() again on every retry iteration -- when the first launch was
+  // merely slow to register with tasklist (the AV real-time-scanning race
+  // described above) rather than actually failed, that spawned a second,
+  // and sometimes third, fully separate running instance instead of just
+  // catching up to the one already on its way. A real bug, reported after
+  // shipping with the old loop. The retries below only re-check whether
+  // that single launch came up, with a growing wait between checks --
+  // never launching a second process.
+  Sleep(2000);
+  Exec(ExpandConstant('{app}\ShatteredGamingOverlay.exe'), '', '',
+    SW_SHOWNORMAL, ewNoWait, ResultCode);
+
+  SettleDelayMs := 1500;
   for Attempt := 1 to 3 do
   begin
     Sleep(SettleDelayMs);
-    Exec(ExpandConstant('{app}\ShatteredGamingOverlay.exe'), '', '',
-      SW_SHOWNORMAL, ewNoWait, ResultCode);
-
-    // Give the bootloader a moment to either come up or crash outright
-    // before checking whether it's actually still alive.
-    Sleep(1500);
 
     if IsAppProcessRunning() then
     begin
       Log('RelaunchAppAfterSilentUpdate: ShatteredGamingOverlay.exe confirmed ' +
-        'running after attempt ' + IntToStr(Attempt) + ' (settle delay was ' +
+        'running (check ' + IntToStr(Attempt) + ', last wait was ' +
         IntToStr(SettleDelayMs) + 'ms).');
       Exit;
     end;
 
     Log('RelaunchAppAfterSilentUpdate: ShatteredGamingOverlay.exe not found ' +
-      'running after attempt ' + IntToStr(Attempt) + ' (settle delay was ' +
-      IntToStr(SettleDelayMs) + 'ms) -- likely the bootloader race described ' +
-      'above; retrying with a longer settle delay.');
-    SettleDelayMs := SettleDelayMs + 2000;
+      'running on check ' + IntToStr(Attempt) + ' (wait was ' +
+      IntToStr(SettleDelayMs) + 'ms) -- checking again before giving up, ' +
+      'not launching another instance.');
+    SettleDelayMs := SettleDelayMs + 1500;
   end;
 
-  Log('RelaunchAppAfterSilentUpdate: gave up after 3 attempts -- the silent ' +
-    'update completed but ShatteredGamingOverlay.exe did not stay running. ' +
-    'The user will need to launch it manually.');
+  Log('RelaunchAppAfterSilentUpdate: gave up after 3 checks -- the silent ' +
+    'update completed but ShatteredGamingOverlay.exe did not appear to stay ' +
+    'running. The user will need to launch it manually.');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

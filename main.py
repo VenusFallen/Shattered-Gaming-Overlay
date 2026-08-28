@@ -60,6 +60,7 @@ from imgui_bundle import imgui
 from imgui_bundle import immapp
 
 import profiles as profiles_engine
+import settings_store
 import shell
 import theme as theme_module
 import tray_icon as tray_icon_module
@@ -165,7 +166,12 @@ def _post_init(app_state: AppState) -> None:
         updater.update_manager.start_check(VERSION, is_automatic=True)
 
 
-def _before_exit() -> None:
+def _before_exit(app_state: AppState) -> None:
+    # Belt-and-suspenders: panels/settings.py already writes settings.json
+    # on every committed change (theme pick, toggle flip, slider/color-
+    # picker release), but this catches anything that somehow didn't --
+    # never skip a real save just because one should have already happened.
+    settings_store.save(app_state)
     # Tear down the bind-capture hook (if it was ever started) rather than
     # leaving it installed until process teardown.
     capture_service.shutdown()
@@ -192,6 +198,11 @@ def _before_exit() -> None:
 
 def main() -> None:
     app_state = new_app_state()
+    # Load settings.json if present (see settings_store.py's module
+    # docstring) -- app-wide preferences, deliberately separate from and
+    # loaded before profiles.json below: which profile is active must never
+    # change what theme/close-behavior/etc. the user configured.
+    settings_store.load(app_state)
     # Load profiles.json if present (see profiles.py's module docstring) --
     # populates app_state.profiles.profiles and, if a saved active profile
     # exists, applies it (with the persist_* safety pattern) before the
@@ -293,7 +304,7 @@ def main() -> None:
         macro_engine.update_snapshot(app_state.macros)
 
     runner_params.callbacks.post_init = lambda: _post_init(app_state)
-    runner_params.callbacks.before_exit = _before_exit
+    runner_params.callbacks.before_exit = lambda: _before_exit(app_state)
     runner_params.callbacks.show_gui = _show_gui
 
     immapp.run(runner_params)

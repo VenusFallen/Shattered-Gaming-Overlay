@@ -50,6 +50,20 @@ datas = []
 binaries = []
 hiddenimports = []
 
+# assets/ (icon.ico, icon.png) -- the `icon=` EXE parameter below only bakes
+# icon.ico into the built exe's own resource section (what Explorer/the
+# taskbar show for the exe file itself); it does NOT put the file on disk
+# for the app's own code to read at runtime. main.py's _set_window_icon()
+# and tray_icon.py's _add_icon() both load 'assets/icon.ico' from a path
+# relative to their own frozen __file__ (PyInstaller resolves that under
+# sys._MEIPASS), which silently no-ops if the file isn't actually bundled
+# as data -- confirmed as the real cause of a shipped-and-reported bug
+# where the system tray icon rendered blank (the main window's own titlebar
+# icon had the identical silent failure, just masked by Windows falling
+# back to the exe's baked-in resource icon there, which Shell_NotifyIcon
+# has no equivalent fallback for).
+datas += [('assets', 'assets')]
+
 # imgui_bundle -- this project's entire UI toolkit (Dear ImGui via Hello
 # ImGui). Data files only (fonts/icon assets Hello ImGui's C++ side loads by
 # relative path) + native binaries (_imgui_bundle*.pyd, glfw3.dll) -- see

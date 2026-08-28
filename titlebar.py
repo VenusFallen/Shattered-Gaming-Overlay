@@ -97,13 +97,17 @@ def _toggle_maximize() -> None:
     user32.ShowWindow(hwnd, _SW_RESTORE if user32.IsZoomed(hwnd) else _SW_MAXIMIZE)
 
 
-def _close() -> None:
+def _close(settings) -> None:
     # Hide-to-tray, not exit: the tray icon (tray_icon.py) is what owns a
     # real, full application exit now (its Quit menu item sets this same
     # app_shall_exit flag). Falls back to actually exiting only if the tray
     # icon never came up (e.g. Shell_NotifyIcon failed) -- otherwise closing
     # the X button would strand the user with no way to get the window back.
-    if tray_icon.is_running():
+    # `settings.close_minimizes_to_tray` (panels/settings.py's Window
+    # behavior card) lets the user opt out of hide-to-tray entirely -- when
+    # off, skip straight to the real-exit path below even if the tray icon
+    # is running.
+    if settings.close_minimizes_to_tray and tray_icon.is_running():
         hwnd = _hwnd()
         if hwnd:
             # Minimize before hiding, not a bare SW_HIDE: Windows only fires
@@ -206,7 +210,7 @@ def render(ctx: PanelContext) -> None:
     imgui.same_line(0, 0)
     close_hover = (theme.danger[0], theme.danger[1], theme.danger[2], 0.85)
     if _bar_button(theme, "titlebar-close", fa.ICON_FA_TIMES, close_hover, btn_w):
-        _close()
+        _close(ctx.state.settings)
 
     imgui.end_child()
     imgui.pop_style_color()

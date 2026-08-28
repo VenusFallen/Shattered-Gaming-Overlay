@@ -148,7 +148,7 @@ def labeled_toggle(
 
 def hex_color_picker(
     theme: Theme, str_id: str, label: str, rgba: Tuple[float, float, float, float]
-) -> Tuple[bool, Tuple[float, float, float, float]]:
+) -> Tuple[bool, Tuple[float, float, float, float], bool]:
     """A themed color swatch + label; clicking the swatch opens a popup with
     a single large visual picker and one hex input field -- deliberately no
     R/G/B number fields and no alpha/transparency control, since the default
@@ -161,6 +161,16 @@ def hex_color_picker(
     way out) rather than narrowing to RGB -- existing RGBA-typed consumers
     (e.g. OverlayState.crosshair.color, hud_overlay.py's renderer) don't
     need to change, this widget just never exposes the 4th channel.
+
+    Returns (changed, rgba, committed). `changed` fires every frame the user
+    is actively dragging inside the picker (imgui.color_picker3's own
+    per-frame `picked` flag) -- callers that only want a live preview keep
+    using that, same as before. `committed` fires exactly once, the frame
+    the user releases the drag (imgui.is_item_deactivated_after_edit() on
+    the picker widget itself) -- this has to be checked here, immediately
+    after color_picker3, since by the time this function returns to its
+    caller the "last item" ImGui tracks is the Close button drawn below, not
+    the picker.
     """
     imgui.push_id(str_id)
     swatch_col = imgui.ImVec4(rgba[0], rgba[1], rgba[2], 1.0)
@@ -170,6 +180,7 @@ def hex_color_picker(
     imgui.text(label)
 
     changed = False
+    committed = False
     new_rgb = [rgba[0], rgba[1], rgba[2]]
     if imgui.begin_popup("picker"):
         flags = (
@@ -180,13 +191,14 @@ def hex_color_picker(
         )
         picked, new_rgb = imgui.color_picker3("##pickerwidget", new_rgb, flags)
         changed = changed or picked
+        committed = imgui.is_item_deactivated_after_edit()
         imgui.spacing()
         if imgui.button("Close", imgui.ImVec2(-1, 0)):
             imgui.close_current_popup()
         imgui.end_popup()
 
     imgui.pop_id()
-    return changed, (new_rgb[0], new_rgb[1], new_rgb[2], 1.0)
+    return changed, (new_rgb[0], new_rgb[1], new_rgb[2], 1.0), committed
 
 
 # ---------------------------------------------------------------------------

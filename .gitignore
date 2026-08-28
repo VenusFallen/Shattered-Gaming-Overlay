@@ -13,6 +13,7 @@ dist/
 # same "don't commit build output" convention as build/ and dist/ above.
 installer/
 profiles.json
+settings.json
 .venv/
 venv/
 *.log

@@ -126,6 +126,11 @@ def render_frame(state: AppState) -> None:
     # frame, same as titlebar.render(ctx) just above, so it can show
     # regardless of which panel is currently active.
     settings.render_auto_update_prompt(ctx)
+    # Covers the rest of the flow (download progress -> Install -> closing)
+    # once a download has actually started, from either origin -- see
+    # render_update_flow_popup's docstring -- so the user is never stranded
+    # needing to navigate back to Settings to finish an update in progress.
+    settings.render_update_flow_popup(ctx)
 
     _render_sidebar(ctx)
     imgui.same_line()

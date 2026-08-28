@@ -33,6 +33,7 @@ from imgui_bundle import hello_imgui as hi
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
+import settings_store
 import theme as theme_module
 import updater
 import widgets
@@ -42,6 +43,15 @@ from panels import window_select
 from version import VERSION
 
 _AUTO_UPDATE_POPUP_ID = "Update Available"
+_UPDATE_FLOW_POPUP_ID = "Installing Update"
+
+# Statuses covered by render_update_flow_popup below -- the tail of the
+# update flow, after the initial ask (AVAILABLE, handled by
+# render_auto_update_prompt) has already been accepted, from either origin:
+# the auto-prompt's Update Now button or the Settings card's own Check
+# Now/Update button (_on_update_button_clicked; both origins only ever drive
+# updater.update_manager into these same statuses).
+_UPDATE_FLOW_STATUSES = (UpdateStatus.DOWNLOADING, UpdateStatus.READY, UpdateStatus.INSTALLING)
 
 _THEME_CARD = 84.0
 _THEME_SWATCH_ROW_H = 26.0
@@ -145,7 +155,10 @@ def _render_appearance(ctx: PanelContext) -> None:
     with widgets.card(theme, "settings-appearance", size=(0, 0)):
         widgets.section_title("Appearance")
 
+        old_theme_name = settings.theme_name
         settings.theme_name = _theme_picker(theme, settings.theme_name)
+        if settings.theme_name != old_theme_name:
+            settings_store.save(ctx.state)
 
         if settings.theme_name == "color_cycle":
             imgui.spacing()
@@ -155,8 +168,17 @@ def _render_appearance(ctx: PanelContext) -> None:
                 "-- like a slow RGB keyboard breathing effect, not a rainbow cycle.",
             )
             imgui.spacing()
-            _, settings.cycle_color_a = widgets.hex_color_picker(theme, "cycle-color-a", "Color A", settings.cycle_color_a)
-            _, settings.cycle_color_b = widgets.hex_color_picker(theme, "cycle-color-b", "Color B", settings.cycle_color_b)
+            # committed fires once, on drag-release inside the popup -- see
+            # hex_color_picker's docstring. Saving on every `changed` frame
+            # would mean a disk write per frame of drag.
+            _, settings.cycle_color_a, committed_a = widgets.hex_color_picker(
+                theme, "cycle-color-a", "Color A", settings.cycle_color_a
+            )
+            _, settings.cycle_color_b, committed_b = widgets.hex_color_picker(
+                theme, "cycle-color-b", "Color B", settings.cycle_color_b
+            )
+            if committed_a or committed_b:
+                settings_store.save(ctx.state)
             imgui.spacing()
             imgui.set_next_item_width(260)
             # Bounds are deliberately both "slow" -- even the fast end of
@@ -166,17 +188,37 @@ def _render_appearance(ctx: PanelContext) -> None:
             _, settings.cycle_period_sec = imgui.slider_float(
                 "Cycle speed##cycle", settings.cycle_period_sec, 15.0, 45.0, "%.0f sec per full cycle"
             )
+            if imgui.is_item_deactivated_after_edit():
+                settings_store.save(ctx.state)
             if settings.reduce_motion:
                 widgets.muted_text(theme, "Reduce motion is on -- the color is frozen and will not drift.")
 
         imgui.spacing()
-        _, settings.reduce_motion = widgets.labeled_toggle(
+        changed, settings.reduce_motion = widgets.labeled_toggle(
             theme,
             "Reduce motion",
             settings.reduce_motion,
             settings.reduce_motion,
             tooltip="Disables toggle-switch animation and other future motion effects.",
         )
+        if changed:
+            settings_store.save(ctx.state)
+
+
+def _render_window_behavior(ctx: PanelContext) -> None:
+    theme = ctx.theme
+    settings = ctx.state.settings
+    with widgets.card(theme, "settings-window-behavior", size=(0, 0)):
+        widgets.section_title("Window behavior")
+        changed, settings.close_minimizes_to_tray = widgets.labeled_toggle(
+            theme,
+            "Closing the window minimizes to tray",
+            settings.close_minimizes_to_tray,
+            settings.reduce_motion,
+            tooltip="Off: the X button exits the app outright instead of hiding to the tray icon.",
+        )
+        if changed:
+            settings_store.save(ctx.state)
 
 
 # Maps UpdateStatus -> (badge level, badge label). Mirrors R9Tools'
@@ -241,9 +283,11 @@ def _render_updates(ctx: PanelContext) -> None:
                 "No GitHub repository is published for this project yet -- checks will fail until one exists.",
             )
 
-        _, settings.check_for_updates_on_launch = widgets.labeled_toggle(
+        changed, settings.check_for_updates_on_launch = widgets.labeled_toggle(
             theme, "Check for updates on launch", settings.check_for_updates_on_launch, settings.reduce_motion
         )
+        if changed:
+            settings_store.save(ctx.state)
 
         imgui.spacing()
         widgets.muted_text(theme, settings.last_checked_display)
@@ -296,6 +340,54 @@ def render_auto_update_prompt(ctx: PanelContext) -> None:
         imgui.end_popup()
 
 
+def render_update_flow_popup(ctx: PanelContext) -> None:
+    """Global modal covering the rest of the update flow once a download has
+    actually started -- DOWNLOADING -> READY -> INSTALLING -- regardless of
+    which panel is active. Without this, only `_render_updates` (the
+    Settings-tab card) ever showed the Install button, so a user who started
+    a download and then switched tabs had no way back to it short of
+    manually returning to Settings. Driven off `settings.update_status`
+    itself (see _UPDATE_FLOW_STATUSES) rather than a flag set only by the
+    auto-prompt path, so this covers a download started via the Settings
+    card's own Check Now/Update button too. Call once per frame from
+    shell.py, same placement as render_auto_update_prompt.
+    """
+    theme = ctx.theme
+    settings = ctx.state.settings
+    active = settings.update_status in _UPDATE_FLOW_STATUSES
+
+    if active and not imgui.is_popup_open(_UPDATE_FLOW_POPUP_ID):
+        imgui.open_popup(_UPDATE_FLOW_POPUP_ID)
+
+    imgui.set_next_window_size(imgui.ImVec2(380, 0), imgui.Cond_.appearing)
+    flags = imgui.WindowFlags_.always_auto_resize | imgui.WindowFlags_.no_resize
+    opened, _ = imgui.begin_popup_modal(_UPDATE_FLOW_POPUP_ID, None, flags)
+    if opened:
+        if not active:
+            # Status moved past this range (e.g. straight to ERROR) while
+            # the popup was still open from a prior frame -- close rather
+            # than render stale content.
+            imgui.close_current_popup()
+        elif settings.update_status == UpdateStatus.DOWNLOADING:
+            imgui.text(f"Downloading v{settings.update_latest_version}...")
+            imgui.spacing()
+            pct = settings.update_download_pct / 100.0
+            imgui.progress_bar(pct, imgui.ImVec2(340, 0), f"{settings.update_download_pct}%")
+        elif settings.update_status == UpdateStatus.READY:
+            imgui.text_wrapped(f"Shattered Gaming Overlay v{settings.update_latest_version} is ready to install.")
+            widgets.muted_text(theme, "The app will close to finish installing.")
+            imgui.spacing()
+            if imgui.button("Install", imgui.ImVec2(140, 0)):
+                # Same install_and_quit() -> app_shall_exit sequence
+                # _on_update_button_clicked already uses for this exact
+                # status -- reused here rather than re-implemented, so
+                # there is exactly one place that owns this handoff.
+                _on_update_button_clicked(UpdateStatus.READY)
+        elif settings.update_status == UpdateStatus.INSTALLING:
+            imgui.text("Installing -- the app will close shortly...")
+        imgui.end_popup()
+
+
 def render(ctx: PanelContext) -> None:
     theme = ctx.theme
     imgui.text(f"{fa.ICON_FA_COG}  Settings")
@@ -304,5 +396,7 @@ def render(ctx: PanelContext) -> None:
     _render_appearance(ctx)
     imgui.spacing()
     window_select.render_section(ctx)
+    imgui.spacing()
+    _render_window_behavior(ctx)
     imgui.spacing()
     _render_updates(ctx)
