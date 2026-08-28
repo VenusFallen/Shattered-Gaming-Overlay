@@ -78,8 +78,8 @@ def render_section(ctx: PanelContext) -> None:
             if not state.available:
                 widgets.muted_text(
                     theme,
-                    "No processes enumerated yet -- this list populates once the engine's "
-                    "process/window enumeration is wired in.",
+                    "No windows found yet -- this refreshes automatically every couple "
+                    "seconds, or click Refresh above.",
                 )
             elif not visible:
                 widgets.muted_text(theme, "No running processes match that filter.")

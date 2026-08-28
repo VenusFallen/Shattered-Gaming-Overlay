@@ -40,6 +40,13 @@ overlay itself is a separate, click-through, DirectComposition-backed,
 non-injecting window, entirely distinct from the Companion window built
 below. Nothing about the HUD
 overlay is rendered as part of this window's own ImGui frame.
+
+Also starts/stops the system tray icon (tray_icon.py). titlebar.py's Close
+button hides the Companion window to tray instead of exiting; the tray
+icon's own Quit menu item is what performs a real, full application exit
+now (see tray_icon.py's module docstring). This is unrelated to, and never
+touches, the HUD overlay -- hiding the Companion window to tray has no
+effect on whatever the HUD overlay is currently showing.
 """
 
 from __future__ import annotations
@@ -55,6 +62,7 @@ from imgui_bundle import immapp
 import profiles as profiles_engine
 import shell
 import theme as theme_module
+import tray_icon as tray_icon_module
 import updater
 import window_select
 from app_state import AppState, new_app_state
@@ -120,6 +128,22 @@ def _post_init(app_state: AppState) -> None:
     # HUD draws it; keeps the box responsive the instant the toggle flips on
     # rather than waiting a poll interval).
     stats_poller.start()
+    # Independent OS-foreground-focus polling: its own dedicated background
+    # thread, entirely decoupled from Hello ImGui's `show_gui` callback (which
+    # does not fire while the Companion window is minimized). Must be running
+    # before remapper_engine.start() below, since remapper.py's hook thread
+    # reads window_select.cached_foreground_pid() live on every physical
+    # event -- see window_select.py's "Independent focus polling" and
+    # remapper.py's "Window-filter gating" docstring sections.
+    window_select.start_focus_tracking()
+    # System tray icon (tray_icon.py): its own hidden message window +
+    # background thread, started here alongside the other lifetime-of-the-app
+    # background pieces above. titlebar.py's Close button checks
+    # tray_icon.tray_icon.is_running() to decide whether to hide-to-tray or
+    # fall back to a real exit, so this must be up before the user can click
+    # Close -- safe either way since _post_init finishes before the first
+    # frame renders.
+    tray_icon_module.tray_icon.start()
     # Remapper/Macro engine: hooks stay installed for the whole app lifetime
     # (it's the match/inject step that's gated on focus, not hook
     # installation). macro_engine.py
@@ -159,6 +183,11 @@ def _before_exit() -> None:
     # down cleanly (macro_engine.stop() signals + joins them).
     macro_engine.stop()
     remapper_engine.stop()
+    # Stop the independent focus-polling thread started in _post_init above.
+    window_select.stop_focus_tracking()
+    # Remove the tray icon and stop its message-pump thread cleanly, whether
+    # exit was triggered by the tray's own Quit item or any other path.
+    tray_icon_module.tray_icon.stop()
 
 
 def main() -> None:

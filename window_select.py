@@ -27,14 +27,41 @@ relative cost: always re-checks foreground focus (cheap), but only
 re-enumerates `state.available` if `_REFRESH_INTERVAL_SEC` has elapsed since
 the last enumeration (comparatively heavy -- EnumWindows over every top-level
 window on the system plus a psutil.Process() call per surviving candidate).
+
+Independent focus polling (decoupled from the Companion window's render loop)
+-------------------------------------------------------------------------
+`refresh_if_stale()` above is only ever called from Hello ImGui's `show_gui`
+callback (see main.py/shell.py) -- which, like many GLFW-backed render loops,
+is simply not invoked at all while the Companion window is minimized
+(`IsIconic`). That's fine for `state.available` (a picker list -- nothing to
+show while minimized anyway) but was a real bug for OS-foreground-focus
+tracking: `remapper.py`'s window-filter gate needs to react the instant a
+targeted game regains focus, including while the Companion window has been
+sitting minimized the whole time, and a value that only updates when a frame
+happens to render can't do that.
+
+`start_focus_tracking()`/`stop_focus_tracking()` run a small dedicated
+background thread (`SGO-FocusTracker`, matching `input_hooks.HookManager`'s
+`SGO-InputHook` naming) that polls `foreground_pid()` on its own short,
+fixed interval, publishing the result under a lock as `cached_foreground_pid()`
+-- exactly the same "own thread + lock-guarded snapshot, never a shared
+mutable dataclass across threads" pattern this project already uses for
+`stats_poller.py`/`hud_overlay.py`. `remapper.py`'s hook thread calls
+`cached_foreground_pid()` directly, fresh on every physical input event, so
+its window-filter gate is correct regardless of whether the Companion window
+is currently rendering, minimized, or occluded. `cached_foreground_pid()`
+also has a built-in staleness fallback (see its docstring) so a caller is
+never silently handed a frozen answer if the tracker thread was never
+started or has died.
 """
 
 from __future__ import annotations
 
 import ctypes
+import threading
 import time
 from ctypes import wintypes
-from typing import List
+from typing import List, Optional
 
 import psutil
 
@@ -197,6 +224,91 @@ def refresh_if_stale(state: WindowSelectState) -> None:
             pass
 
     if state.selected is not None:
-        state.selected_has_focus = foreground_pid() == state.selected.pid
+        state.selected_has_focus = cached_foreground_pid() == state.selected.pid
     else:
         state.selected_has_focus = False
+
+
+# ---------------------------------------------------------------------------
+# Independent focus polling -- see module docstring's "Independent focus
+# polling" section for why this exists as its own dedicated thread rather
+# than piggybacking on refresh_if_stale()'s per-Companion-frame call site.
+# ---------------------------------------------------------------------------
+
+_FOCUS_POLL_INTERVAL_SEC = 0.1
+# Generous vs. the poll interval above -- if the background thread hasn't
+# published a fresh value within this long (never started, or died
+# unexpectedly), cached_foreground_pid() falls back to a direct synchronous
+# call rather than silently handing back a value frozen at whatever it was
+# the instant the thread stopped updating.
+_FOCUS_CACHE_STALE_SEC = 1.0
+
+_focus_lock = threading.Lock()
+_cached_foreground_pid = 0
+_last_focus_poll_monotonic = 0.0
+_focus_thread: Optional[threading.Thread] = None
+_focus_thread_stop = threading.Event()
+
+
+def _focus_poll_loop() -> None:
+    global _cached_foreground_pid, _last_focus_poll_monotonic
+    while not _focus_thread_stop.is_set():
+        try:
+            pid = foreground_pid()
+        except OSError:
+            pid = 0
+        with _focus_lock:
+            _cached_foreground_pid = pid
+            _last_focus_poll_monotonic = time.monotonic()
+        _focus_thread_stop.wait(_FOCUS_POLL_INTERVAL_SEC)
+
+
+def start_focus_tracking() -> None:
+    """Start the dedicated background thread that keeps OS-foreground-focus
+    tracking current independent of the Companion window's render loop --
+    call once at startup (see main.py's `_post_init`), alongside
+    `hud_overlay.start()`/`stats_poller.start()`/`remapper_engine.start()`.
+    Idempotent; safe to call again if already running."""
+    global _focus_thread
+    if _focus_thread is not None and _focus_thread.is_alive():
+        return
+    _focus_thread_stop.clear()
+    _focus_thread = threading.Thread(target=_focus_poll_loop, name="SGO-FocusTracker", daemon=True)
+    _focus_thread.start()
+
+
+def stop_focus_tracking() -> None:
+    """Stop the background thread cleanly (see main.py's `_before_exit`).
+    Safe to call even if the thread was never started."""
+    global _focus_thread
+    _focus_thread_stop.set()
+    thread = _focus_thread
+    _focus_thread = None
+    if thread is not None and thread.is_alive():
+        thread.join(timeout=1.0)
+
+
+def focus_tracking_is_running() -> bool:
+    return _focus_thread is not None and _focus_thread.is_alive()
+
+
+def cached_foreground_pid() -> int:
+    """Thread-safe, cheap, non-blocking read of the last-polled OS
+    foreground pid, kept current by the background thread started via
+    `start_focus_tracking()`. Safe to call from any thread (in particular
+    `remapper.py`'s hook thread, on every physical input event) at any rate,
+    and correct regardless of whether the Companion window is currently
+    rendering frames at all (minimized, occluded, idling, etc.) -- this is
+    the whole point of the dedicated thread over piggybacking on
+    `refresh_if_stale()`.
+
+    Falls back to a direct synchronous `foreground_pid()` call if the cached
+    value is stale (tracker never started, or died) -- callers never
+    silently get a frozen answer.
+    """
+    with _focus_lock:
+        cached = _cached_foreground_pid
+        fresh_enough = (time.monotonic() - _last_focus_poll_monotonic) < _FOCUS_CACHE_STALE_SEC
+    if fresh_enough:
+        return cached
+    return foreground_pid()

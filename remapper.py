@@ -37,6 +37,20 @@ remapped/suppressed NOR published to the effective-event stream, which is
 what makes the Macro engine go inert together with the Remapper without
 needing its own separate focus-tracking logic.
 
+The gate is evaluated fresh on every physical event, on the hook thread
+itself, via `window_select.cached_foreground_pid()` -- deliberately NOT via
+a value stashed once per Companion-window frame in `update_snapshot()`.
+Hello ImGui's `show_gui` callback (where `update_snapshot()` is called from,
+see main.py) does not fire at all while the Companion window is minimized,
+which would otherwise freeze the gate open/closed at whatever it happened to
+be the instant before minimizing -- see `window_select.py`'s "Independent
+focus polling" docstring section for the full story. `update_snapshot()`
+below still hands off the target pid (just an int, changes only when the
+user picks a different process in the UI -- not focus-sensitive, so no
+staleness concern there), but the actual has-focus check happens live in
+`_handle()` against `window_select`'s own independently-polled background
+thread.
+
 Hook-sharing decision (vs. key_capture.py)
 --------------------------------------------
 This module owns its OWN `HookManager` instance, separate from
@@ -68,6 +82,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 import input_inject
+import window_select
 from input_hooks import HookManager, KeyEvent, MouseButtonEvent
 from key_capture import KeyBind, is_mouse_vk, keybind_vk_to_mouse_button, mouse_button_to_vk
 
@@ -120,9 +135,14 @@ class RemapperEngine:
         self._lock = threading.Lock()
 
         # snapshot state, written only by update_snapshot() (Companion
-        # thread), read only by _handle() (hook thread)
+        # thread), read only by _handle() (hook thread). `_target_pid` is
+        # None when no process is targeted (gate always open); otherwise the
+        # pid the gate compares live against `window_select.
+        # cached_foreground_pid()` in `_handle()` -- see module docstring's
+        # "Window-filter gating" section for why the has-focus check itself
+        # is NOT part of this snapshot.
         self._mapping: Dict[int, KeyBind] = {}
-        self._gate_open: bool = True
+        self._target_pid: Optional[int] = None
 
         # hook-thread-only state (never touched from update_snapshot) --
         # tracks which source identities are *currently* suppressed-and-
@@ -166,7 +186,17 @@ class RemapperEngine:
         which panel is active -- mirrors hud_overlay.update_crosshair()'s
         per-frame hand-off. KeyBind is a frozen dataclass, so storing the
         destination references directly here is safe to read from the hook
-        thread without copying further."""
+        thread without copying further.
+
+        Only hands off *which* pid is targeted (or None) -- not whether it
+        currently has focus. That check is deliberately NOT snapshotted here
+        (see module docstring's "Window-filter gating" section): this
+        function is only ever called from Hello ImGui's `show_gui` callback,
+        which does not fire while the Companion window is minimized, so a
+        has-focus value cached here would freeze exactly when it matters
+        most. `_handle()` below checks focus live via
+        `window_select.cached_foreground_pid()` on every physical event
+        instead."""
         mapping: Dict[int, KeyBind] = {}
         for entry in remapper_state.entries:
             if not entry.enabled:
@@ -176,11 +206,11 @@ class RemapperEngine:
             mapping.setdefault(entry.source.vk_code, entry.destination)
 
         selected = window_select_state.selected
-        gate_open = selected is None or window_select_state.selected_has_focus
+        target_pid = selected.pid if selected is not None else None
 
         with self._lock:
             self._mapping = mapping
-            self._gate_open = gate_open
+            self._target_pid = target_pid
 
     # ------------------------------------------------------------------
     # Hook callbacks (hook thread)
@@ -200,7 +230,13 @@ class RemapperEngine:
     def _handle(self, vk: int, up: bool, name: str, time_ms: int) -> Optional[bool]:
         with self._lock:
             mapping = self._mapping
-            gate_open = self._gate_open
+            target_pid = self._target_pid
+
+        # Evaluated live, every event, against window_select's own
+        # independently-polled background thread -- see module docstring's
+        # "Window-filter gating" section for why this is not read from a
+        # once-per-Companion-frame snapshot.
+        gate_open = target_pid is None or window_select.cached_foreground_pid() == target_pid
 
         if not gate_open:
             # Inert: a process is targeted and it doesn't currently have OS

@@ -38,9 +38,19 @@
 ;     top of updater.py's Wait-Process watcher, which remains the primary
 ;     mechanism closing the race.
 
+; MyAppVersion is passed in by build.bat via /DMyAppVersion=<version.py's
+; VERSION> at compile time, so AppVersion below can never drift out of sync
+; with the actual app again (found and fixed as a real bug during the pre-
+; 1.0 QA pass: this file's AppVersion was hardcoded and had gone stale
+; against version.py). The fallback here only matters if ISCC is ever run
+; directly instead of through build.bat.
+#ifndef MyAppVersion
+  #define MyAppVersion "0.0.0-dev"
+#endif
+
 [Setup]
 AppName=Shattered Gaming Overlay
-AppVersion=0.2.0
+AppVersion={#MyAppVersion}
 AppPublisher=VenusFallen
 AppSupportURL=https://github.com/VenusFallen/Shattered-Gaming-Overlay
 DefaultDirName={autopf}\Shattered Gaming Overlay

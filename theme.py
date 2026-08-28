@@ -375,18 +375,30 @@ HIGH_CONTRAST = Theme(
 #   white text on accent:       4.78:1 (AA)
 #   white text on accent_hover: 4.58:1 (AA)
 #   white text on accent_active: 5.97:1 (AA/AAA)
-#   accent_text on bg_base:      5.99:1 (AA, saturation lowered from blue's
+#   accent_text on bg_base:      5.53:1 (AA, saturation lowered from blue's
 #     infeasible ceiling specifically to keep this one AA-safe everywhere)
-#   accent_text on bg_card:      4.99:1 (AA)
-# accent/accent_hover/accent_active/accent_text saturations (0.80/0.80/0.85/
-# 0.47) are deliberately pushed close to the maximum each one can reach
-# before the worst-case hue (always blue, ~0.667 -- weighted only 7.22% in
-# the WCAG formula) makes the target luminance unreachable at all. An
-# earlier, more conservative pass (0.70/0.70/0.75/0.45) held the exact same
-# contrast ratios above but looked visibly washed out next to whatever raw
-# color the user actually picked -- pushing saturation right up to its safe
-# ceiling (verified the same way, full 360-step sweep) fixes that without
-# touching the contrast guarantee at all.
+#   accent_text on bg_card:      4.61:1 (AA)
+# accent/accent_hover/accent_active/accent_text saturations (0.92/0.92/0.95/
+# 0.50) are pushed as far as each role's contrast floor actually allows --
+# not the same ceiling for every role. Past the exact-target-luminance
+# feasibility point (worst-case hue is always blue, ~0.667, weighted only
+# 7.22% in the WCAG formula), _cycle_role_color's binary search simply
+# clamps V=1 and the color stops getting any brighter, so pushing an
+# accent-family role's saturation all the way to 1.0 costs it nothing more:
+# once V is pinned, white text's contrast against it can only ever improve
+# (a more saturated color is a *darker* one at fixed V=1, and darker
+# backgrounds mean stronger contrast against white foreground text) --
+# confirmed by re-sweeping the full wheel at sat=1.0 and getting the exact
+# same worst-case ratios as above. `accent_text` is the opposite case: it's
+# foreground text, so a saturation past its own ceiling makes the text
+# itself darker and actively *erodes* its contrast against the background.
+# That ceiling was re-solved directly (the actual constraint, not
+# eyeballed): the tighter of "accent_text on bg_base" and "on bg_card"
+# caps out at sat=0.51 for AA; 0.50 leaves a hair of margin. An earlier pass
+# (0.80/0.80/0.85/0.47) mistakenly treated all four roles as sharing one
+# ceiling and stopped short of the real one for the white-text roles --
+# fixed here by solving each role's true constraint independently (verified
+# the same way, full 360-step sweep) rather than a shared approximate band.
 # These hold for ANY hue at all, not just the shipped defaults or the two
 # colors a user happens to pick -- the solve targets an exact luminance per
 # field regardless of which hue it's given, so there's no "bad pair of
@@ -561,10 +573,10 @@ _CYCLE_ROLE_SAT: Dict[str, float] = {
     "text_primary": 0.05,
     "text_secondary": 0.08,
     "text_disabled": 0.06,
-    "accent": 0.80,
-    "accent_hover": 0.80,
-    "accent_active": 0.85,
-    "accent_text": 0.47,  # lower than the rest -- see the blue-feasibility note above
+    "accent": 0.92,
+    "accent_hover": 0.92,
+    "accent_active": 0.95,
+    "accent_text": 0.50,  # lower than the rest -- see the blue-feasibility note above
 }
 
 # Every field _CYCLE_ROLE_SAT covers, keyed the same way, holding DARK's own

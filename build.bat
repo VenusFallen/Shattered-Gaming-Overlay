@@ -13,6 +13,16 @@ rem Also requires Inno Setup 6 (ISCC.exe) for step 2.
 rem
 rem Run this from the project root (the directory containing this file).
 
+rem Read VERSION once, up front -- used both for the ISCC /D define (so
+rem ShatteredGamingOverlay.iss's AppVersion can never drift out of sync with
+rem version.py again, a real bug found and fixed during the pre-1.0 QA pass)
+rem and for the release zip name in Step 3.
+for /f "usebackq tokens=*" %%v in (`python -c "import version; print(version.VERSION)"`) do set SGO_VERSION=%%v
+if "%SGO_VERSION%"=="" (
+    echo ERROR: could not read VERSION from version.py
+    goto :error
+)
+
 echo === Step 1/3: PyInstaller ===
 pyinstaller ShatteredGamingOverlay.spec
 if errorlevel 1 goto :error
@@ -30,16 +40,11 @@ if %errorlevel%==0 (
     echo ERROR: ISCC.exe ^(Inno Setup 6 compiler^) not found on PATH or in the default install locations.
     goto :error
 )
-"%ISCC%" ShatteredGamingOverlay.iss
+"%ISCC%" "/DMyAppVersion=%SGO_VERSION%" ShatteredGamingOverlay.iss
 if errorlevel 1 goto :error
 
 echo.
 echo === Step 3/3: Release zip ===
-for /f "usebackq tokens=*" %%v in (`python -c "import version; print(version.VERSION)"`) do set SGO_VERSION=%%v
-if "%SGO_VERSION%"=="" (
-    echo ERROR: could not read VERSION from version.py
-    goto :error
-)
 set ZIP_NAME=ShatteredGamingOverlay_v%SGO_VERSION%.zip
 powershell -NoProfile -Command "Compress-Archive -Path 'installer\ShatteredGamingOverlay_Setup.exe' -DestinationPath 'installer\%ZIP_NAME%' -Force"
 if errorlevel 1 goto :error

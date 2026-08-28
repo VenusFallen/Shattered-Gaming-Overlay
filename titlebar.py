@@ -45,6 +45,7 @@ from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
 from panel_context import PanelContext
+from tray_icon import tray_icon
 from version import WINDOW_TITLE
 
 user32 = ctypes.windll.user32
@@ -56,6 +57,7 @@ user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
 user32.ReleaseCapture.restype = wintypes.BOOL
 user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
 
+_SW_HIDE = 0
 _SW_RESTORE = 9
 _SW_MINIMIZE = 6
 _SW_MAXIMIZE = 3
@@ -96,6 +98,26 @@ def _toggle_maximize() -> None:
 
 
 def _close() -> None:
+    # Hide-to-tray, not exit: the tray icon (tray_icon.py) is what owns a
+    # real, full application exit now (its Quit menu item sets this same
+    # app_shall_exit flag). Falls back to actually exiting only if the tray
+    # icon never came up (e.g. Shell_NotifyIcon failed) -- otherwise closing
+    # the X button would strand the user with no way to get the window back.
+    if tray_icon.is_running():
+        hwnd = _hwnd()
+        if hwnd:
+            # Minimize before hiding, not a bare SW_HIDE: Windows only fires
+            # WM_SIZE/SIZE_MINIMIZED (what GLFW's window proc uses to set its
+            # own iconified flag, which is what makes Hello ImGui skip the
+            # render loop -- see window_select.py's focus-tracking fix, which
+            # exists precisely because that skip stops _show_gui from firing)
+            # on a real minimize transition, not a plain hide. A raw SW_HIDE
+            # alone would leave the render loop running at full/idle rate
+            # while completely invisible. SW_RESTORE from the tray's IsIconic
+            # check already handles un-minimizing and un-hiding in one call.
+            user32.ShowWindow(hwnd, _SW_MINIMIZE)
+            user32.ShowWindow(hwnd, _SW_HIDE)
+        return
     # Goes through Hello ImGui's own exit flag rather than posting WM_CLOSE
     # directly, so the normal shutdown path (main.py's before_exit callback,
     # which tears down the bind-capture hook) still runs.
