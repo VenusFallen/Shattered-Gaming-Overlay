@@ -16,6 +16,7 @@ from imgui_bundle import imgui
 import theme as theme_module
 import titlebar
 from app_state import AppState
+from hud_overlay import hud_overlay
 from key_capture import capture_service
 from panel_context import PanelContext
 from panels import about, dashboard, macros, overlay, profiles, remapper, settings
@@ -58,18 +59,7 @@ def _render_sidebar(ctx: PanelContext) -> None:
     imgui.spacing()
     imgui.text_colored(theme.text_secondary, "Companion")
     imgui.spacing()
-
-    # Decorative brand-gradient bar in place of a plain separator -- a flat
-    # accent-colored rule on every theme except one that defines a real
-    # two-color gradient (see theme.gradient_endpoints).
-    start_rgba, end_rgba = theme_module.gradient_endpoints(theme)
-    bar_h = 3.0
-    p_min = imgui.get_cursor_screen_pos()
-    p_max = imgui.ImVec2(p_min.x + imgui.get_content_region_avail().x, p_min.y + bar_h)
-    col_start = imgui.color_convert_float4_to_u32(imgui.ImVec4(*start_rgba))
-    col_end = imgui.color_convert_float4_to_u32(imgui.ImVec4(*end_rgba))
-    imgui.get_window_draw_list().add_rect_filled_multi_color(p_min, p_max, col_start, col_end, col_end, col_start)
-    imgui.dummy(imgui.ImVec2(0, bar_h))
+    imgui.separator()
     imgui.spacing()
 
     # NOTE: imgui.selectable's `size` does NOT support the classic Dear ImGui
@@ -99,12 +89,43 @@ def _render_sidebar(ctx: PanelContext) -> None:
 
 def render_frame(state: AppState) -> None:
     """Called once per frame by Hello ImGui (see main.py)."""
-    theme = theme_module.get_theme(state.settings.theme_name)
-    theme_module.apply_theme(theme, state.settings.ui_scale)
+    # NOTE: deliberately not named `settings` -- panels/settings.py is
+    # already imported into this module's namespace under that name (see
+    # the `settings.render_auto_update_prompt(ctx)` call below), and a local
+    # `settings` here would silently shadow that module reference.
+    app_settings = state.settings
+    if app_settings.theme_name == "color_cycle":
+        # Advance the animation clock here, not inside theme.py --
+        # apply_theme()/resolve_color_cycle_theme() stay non-time-aware, this
+        # is the one call site that owns "what time is it". Reduce Motion
+        # freezes the effect by simply not advancing cycle_elapsed_sec, so
+        # the resolved color holds at whatever it was on last unfrozen.
+        if not app_settings.reduce_motion:
+            app_settings.cycle_elapsed_sec += imgui.get_io().delta_time
+        theme = theme_module.resolve_color_cycle_theme(
+            app_settings.cycle_color_a,
+            app_settings.cycle_color_b,
+            app_settings.cycle_period_sec,
+            app_settings.cycle_elapsed_sec,
+        )
+    else:
+        theme = theme_module.get_theme(app_settings.theme_name)
+    theme_module.apply_theme(theme)
+    # Hand the resolved theme (including any live Color Cycle instant) off
+    # to the HUD overlay's render thread -- see hud_overlay.py's
+    # update_theme() docstring for why this is the one call site that
+    # reaches it (this function is the only place that actually resolves
+    # Color Cycle to a real Theme each frame).
+    hud_overlay.update_theme(theme)
 
     ctx = PanelContext(state=state, theme=theme, capture=capture_service)
 
     titlebar.render(ctx)
+    # Automatic check-on-launch prompt (see updater.py / panels/settings.py's
+    # render_auto_update_prompt docstring) -- drawn unconditionally every
+    # frame, same as titlebar.render(ctx) just above, so it can show
+    # regardless of which panel is currently active.
+    settings.render_auto_update_prompt(ctx)
 
     _render_sidebar(ctx)
     imgui.same_line()

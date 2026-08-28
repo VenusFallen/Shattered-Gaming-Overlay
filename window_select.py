@@ -9,8 +9,8 @@ WindowSelectState.
 Pure user-mode, read-only Win32 calls only -- EnumWindows/GetWindowText/
 GetWindowThreadProcessId/GetForegroundWindow via ctypes, plus psutil for the
 exe name of a pid. No driver, no target-process memory access, no DLL
-injection -- see .claude/agents/engine-agent.md's hard rule. This module
-never touches SendInput or the input hooks at all.
+injection -- keeping to the project's hard rule against any of that. This
+module never touches SendInput or the input hooks at all.
 
 Public API
 ----------
@@ -160,6 +160,18 @@ _REFRESH_INTERVAL_SEC = 2.0
 # to carry engine-internal bookkeeping fields -- see app_state.py's own note
 # that its dataclasses are "pure data, no I/O".
 _last_refresh_monotonic = 0.0
+
+
+def force_refresh(state: WindowSelectState) -> None:
+    """Immediate re-enumeration, bypassing the throttle -- for the UI
+    layer's manual Refresh button, so the user isn't stuck waiting out
+    `_REFRESH_INTERVAL_SEC` after e.g. launching a game."""
+    global _last_refresh_monotonic
+    _last_refresh_monotonic = time.monotonic()
+    try:
+        state.available = enumerate_target_windows()
+    except OSError:
+        pass
 
 
 def refresh_if_stale(state: WindowSelectState) -> None:

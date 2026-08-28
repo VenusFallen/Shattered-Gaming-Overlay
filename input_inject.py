@@ -5,7 +5,7 @@ Wraps the Win32 `SendInput` API via `ctypes`. This is the ONLY way this
 project synthesizes input -- no driver, no ViGEm/virtual-controller HID
 emulation, no game-process memory writes. `SendInput` is the same technique
 AutoHotkey uses and is not a known BattlEye/EAC ban vector for software
-macros. See .claude/agents/engine-agent.md for the full rationale.
+macros.
 
 Design notes
 ------------
@@ -18,8 +18,8 @@ Design notes
   input in the hook would break legitimate accessibility input sources;
   this marker lets the remapper avoid *only* its own feedback loop.
 - No sleeps, no delay/jitter logic lives here. Humanized timing between
-  injected events is a macro_engine.py concern (per engine-agent.md) --
-  this module only ever fires a single instantaneous SendInput call.
+  injected events is a macro_engine.py concern -- this module only ever
+  fires a single instantaneous SendInput call.
 - Kept free of any dependency on input_hooks.py so it can be imported and
   unit-tested completely standalone (e.g. in CI on a non-interactive
   session) without a live hook installed.

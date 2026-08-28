@@ -1,7 +1,7 @@
 """panels/window_select.py -- Target Window: pick a specific running process,
 or leave global. Purely UI rendering over app_state.WindowSelectState; the
 actual psutil/win32 process enumeration and OS-focus tracking live in the
-root-level window_select.py (engine-agent's module -- same split as
+root-level window_select.py (the engine-side module -- same split as
 input_hooks.py/input_inject.py vs their panel files), wired in below via a
 single refresh_if_stale() call.
 
@@ -52,6 +52,11 @@ def render_section(ctx: PanelContext) -> None:
 
         imgui.set_next_item_width(280)
         changed, state.filter_text = imgui.input_text(f"{fa.ICON_FA_SEARCH} Filter", state.filter_text)
+        imgui.same_line()
+        if imgui.button(f"{fa.ICON_FA_SYNC}  Refresh"):
+            window_select.force_refresh(state)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("The list auto-refreshes every couple seconds anyway -- use this to force it now.")
 
         imgui.spacing()
 

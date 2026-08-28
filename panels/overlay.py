@@ -2,10 +2,10 @@
 styling for whatever the future HUD overlay window renders (stats HUD,
 accessibility crosshair, module status indicators). This panel only edits
 app_state.OverlayState -- the actual click-through, non-injecting HUD
-overlay window described in .claude/agents/ui-agent.md is separate, future
-work and is NOT built here. Overlay visibility is intentionally never gated
-by Window Select's focus filter (see engine-agent.md) -- nothing in this
-panel reads or writes window_select state.
+overlay window is separate, future work and is NOT built here. Overlay
+visibility is intentionally never gated by Window Select's focus filter
+(see remapper.py's window-filter gating) -- nothing in this panel reads or
+writes window_select state.
 """
 
 from __future__ import annotations
@@ -16,18 +16,10 @@ from imgui_bundle import imgui
 import widgets
 from panel_context import PanelContext
 
-_CORNERS = ["Top Left", "Top Right", "Bottom Left", "Bottom Right"]
 _CROSSHAIR_STYLES = ["Cross", "Dot", "Circle", "Circle + Dot", "T-Shape"]
 
 _PREVIEW_CARD = 64.0
 _PREVIEW_ICON_R = 20.0
-
-
-def _corner_combo(label: str, current: str) -> str:
-    idx = _CORNERS.index(current) if current in _CORNERS else 0
-    imgui.set_next_item_width(160)
-    changed, idx = imgui.combo(label, idx, _CORNERS)
-    return _CORNERS[idx] if changed else current
 
 
 def _draw_crosshair_preview(draw_list, cx: float, cy: float, style: str, col: int) -> None:
@@ -119,10 +111,13 @@ def _render_stats_hud(ctx: PanelContext) -> None:
         imgui.same_line()
         _, s.show_fps = widgets.labeled_toggle(theme, "FPS", s.show_fps, ctx.state.settings.reduce_motion)
 
-        s.corner = _corner_combo("Anchor corner##stats", s.corner)
+        widgets.muted_text(theme, "Position")
+        s.corner = widgets.screen_position_picker(theme, "stats-position", s.corner)
         imgui.set_next_item_width(200)
         _, s.scale = imgui.slider_float("Scale##stats", s.scale, 0.5, 2.0, "%.2fx")
-        _, s.color = imgui.color_edit4("Text color##stats", s.color)
+        _, s.color = widgets.hex_color_picker(theme, "stats-color", "Text color", s.color)
+        imgui.set_next_item_width(200)
+        _, s.bg_alpha = imgui.slider_float("Background opacity##stats", s.bg_alpha, 0.0, 1.0, "%.2f")
 
 
 def _render_crosshair(ctx: PanelContext) -> None:
@@ -144,7 +139,7 @@ def _render_crosshair(ctx: PanelContext) -> None:
         imgui.set_next_item_width(200)
         _, thickness_int = imgui.slider_int("Thickness##crosshair", int(s.thickness), 1, 8, "%d px")
         s.thickness = float(thickness_int)
-        _, s.color = imgui.color_edit4("Color##crosshair", s.color)
+        _, s.color = widgets.hex_color_picker(theme, "crosshair-color", "Color", s.color)
 
 
 def _render_status_indicators(ctx: PanelContext) -> None:
@@ -154,27 +149,27 @@ def _render_status_indicators(ctx: PanelContext) -> None:
         _, s.enabled = widgets.labeled_toggle(
             theme, f"{fa.ICON_FA_INFO_CIRCLE}  Module Status Indicators", s.enabled, ctx.state.settings.reduce_motion
         )
-        widgets.muted_text(theme, "Shows which macro/remap/profile is currently armed.")
+        widgets.muted_text(
+            theme,
+            "Two themed badges showing how many Remap entries / Macros are currently enabled.",
+        )
         if not s.enabled:
             return
         imgui.spacing()
-        _, s.show_remap_status = widgets.labeled_toggle(
-            theme, "Remap status", s.show_remap_status, ctx.state.settings.reduce_motion
+        _, s.show_remap_badge = widgets.labeled_toggle(
+            theme, "Remapper badge", s.show_remap_badge, ctx.state.settings.reduce_motion
         )
         imgui.same_line()
         imgui.dummy(imgui.ImVec2(16, 0))
         imgui.same_line()
-        _, s.show_macro_status = widgets.labeled_toggle(
-            theme, "Macro status", s.show_macro_status, ctx.state.settings.reduce_motion
-        )
-        imgui.same_line()
-        imgui.dummy(imgui.ImVec2(16, 0))
-        imgui.same_line()
-        _, s.show_profile_name = widgets.labeled_toggle(
-            theme, "Profile name", s.show_profile_name, ctx.state.settings.reduce_motion
+        _, s.show_macro_badge = widgets.labeled_toggle(
+            theme, "Macros badge", s.show_macro_badge, ctx.state.settings.reduce_motion
         )
 
-        s.corner = _corner_combo("Anchor corner##status", s.corner)
+        widgets.muted_text(theme, "Position")
+        s.corner = widgets.screen_position_picker(
+            theme, "status-position", s.corner, widgets.SCREEN_POSITIONS_WITH_MIDDLES
+        )
         imgui.set_next_item_width(200)
         _, s.scale = imgui.slider_float("Scale##status", s.scale, 0.5, 2.0, "%.2fx")
 

@@ -26,8 +26,8 @@ Two phases:
                   click registers, a scroll happens).
 
 Note: this project deliberately never synthesizes relative mouse movement
-(no recoil compensation, no aim assist -- see .claude/agents/engine-agent.md).
-There is no mouse-move phase in this test for that reason.
+(no recoil compensation, no aim assist -- that's a hard rule for this
+project). There is no mouse-move phase in this test for that reason.
 """
 
 from __future__ import annotations

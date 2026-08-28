@@ -1,0 +1,18 @@
+LibreHardwareMonitor's DLLs are bundled directly in this folder and committed
+to the R9Tools repository — cloning or downloading the repo gets you
+everything needed for the Stats Overlay automatically. No manual download or
+"Check for Updates" step is required.
+
+LibreHardwareMonitorLib.dll is the main assembly; the rest of the DLLs in
+this folder are its runtime dependencies. stats_poller.py loads everything
+it finds here via Assembly.LoadFrom, so don't remove files from this set
+unless you've confirmed they're no longer required.
+
+See lib/LICENSE-LibreHardwareMonitor.txt for licensing details (MPL 2.0) —
+these binaries are unmodified, and their source is available at:
+  https://github.com/LibreHardwareMonitor/LibreHardwareMonitor
+
+Also required (pip install):
+  pip install pythonnet>=3.0.0
+
+Run R9Tools as Administrator — LHM requires elevated privileges to read hardware sensors.

@@ -129,8 +129,7 @@ def _bar_button(theme, str_id: str, icon: str, hover_color, size: float) -> bool
 
 def render(ctx: PanelContext) -> None:
     theme = ctx.theme
-    scale = max(0.75, min(ctx.state.settings.ui_scale, 2.0))
-    bar_h = BAR_HEIGHT_UNSCALED * scale
+    bar_h = BAR_HEIGHT_UNSCALED
     btn_w = bar_h * 1.15
 
     imgui.push_style_color(imgui.Col_.child_bg, theme.bg_sidebar)
@@ -168,7 +167,7 @@ def render(ctx: PanelContext) -> None:
     text_size = imgui.calc_text_size(label)
     text_y = cursor_start.y + (bar_h - text_size.y) * 0.5
     draw_list.add_text(
-        imgui.ImVec2(cursor_start.x + 14.0 * scale, text_y),
+        imgui.ImVec2(cursor_start.x + 14.0, text_y),
         imgui.get_color_u32(theme.text_primary),
         label,
     )

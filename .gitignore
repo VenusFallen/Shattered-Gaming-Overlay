@@ -3,7 +3,15 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+# ShatteredGamingOverlay.spec is a real, hand-crafted PyInstaller build
+# input (see build-agent's ShatteredGamingOverlay.spec), not throwaway
+# boilerplate -- explicitly un-ignored below so it's actually tracked.
 *.spec
+!ShatteredGamingOverlay.spec
+# Inno Setup build output (ShatteredGamingOverlay_Setup.exe,
+# ShatteredGamingOverlay_v*.zip) -- large binaries produced by build.bat,
+# same "don't commit build output" convention as build/ and dist/ above.
+installer/
 profiles.json
 .venv/
 venv/

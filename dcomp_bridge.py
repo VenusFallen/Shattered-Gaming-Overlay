@@ -4,8 +4,8 @@ DirectComposition (dcomp.dll) lets the HUD overlay register a DXGI swap
 chain directly in DWM's composition tree as a separate visual. When hardware
 Multi-Plane Overlay (MPO) is available, DWM assigns the overlay to its own
 GPU plane and the game's own swap chain can still use Independent Flip --
-zero composition overhead. See .claude/agents/ui-agent.md for why this
-project uses DirectComposition rather than any game-swap-chain hook.
+zero composition overhead. This is why this project uses DirectComposition
+rather than any game-swap-chain hook.
 
 Only the handful of methods the HUD overlay uses are wrapped here. Vtable
 offsets are fixed by the Windows SDK ABI.

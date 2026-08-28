@@ -1,9 +1,9 @@
 """app_state.py -- in-memory state shape for the Companion window.
 
-No backend engine exists yet (engine-agent's remapper.py / macro_engine.py /
+No backend engine exists yet (remapper.py / macro_engine.py /
 profiles.py / window_select.py are future work), so every panel below owns
 its own local state for now. The shapes here are deliberately close to what
-engine-agent's modules will eventually need, so wiring a real engine in
+those future engine modules will eventually need, so wiring a real engine in
 later is a small "swap the in-memory list for a call into profiles.py" change,
 not a redesign:
 
@@ -12,8 +12,8 @@ not a redesign:
   - ProfilesState.profiles         ~= what profiles.py will persist to disk
   - WindowSelectState              ~= what window_select.py will enumerate/track
   - OverlayState                   ~= what the future HUD overlay will read to
-                                      decide what to render (ui-agent's own
-                                      future work, not engine-agent's)
+                                      decide what to render (future UI work,
+                                      not engine work)
 
 Nothing here talks to input_hooks.py/input_inject.py directly except via
 key_capture.py's bind-capture widget helper -- these dataclasses are pure
@@ -28,6 +28,7 @@ from enum import Enum
 from typing import List, Optional, Tuple
 
 from key_capture import KeyBind, UNBOUND
+from theme import hex_rgba
 
 _id_counter = itertools.count(1)
 
@@ -122,6 +123,7 @@ class MacrosState:
     selected_id: Optional[str] = None
     capturing_macro_id: Optional[str] = None  # trigger-bind capture in progress, if any
     capturing_step_id: Optional[str] = None  # per-step key-bind capture in progress, if any
+    recording_macro_id: Optional[str] = None  # macro_recorder session in progress, if any
 
     def add_macro(self) -> MacroDef:
         macro = MacroDef(id=_next_id("macro"), name=f"Macro {len(self.macros) + 1}")
@@ -135,6 +137,8 @@ class MacrosState:
             self.selected_id = self.macros[0].id if self.macros else None
         if self.capturing_macro_id == macro_id:
             self.capturing_macro_id = None
+        if self.recording_macro_id == macro_id:
+            self.recording_macro_id = None
 
     def find(self, macro_id: Optional[str]) -> Optional[MacroDef]:
         return next((m for m in self.macros if m.id == macro_id), None)
@@ -204,7 +208,7 @@ class ProcessInfo:
 
 @dataclass
 class WindowSelectState:
-    # blank/unset selection == global, unrestricted (per engine-agent.md)
+    # blank/unset selection == global, unrestricted
     selected: Optional[ProcessInfo] = None
     available: List[ProcessInfo] = field(default_factory=list)
     filter_text: str = ""
@@ -217,7 +221,7 @@ class WindowSelectState:
 
 # ---------------------------------------------------------------------------
 # Overlay (Companion-side config for the future HUD overlay -- rendering
-# itself is a separate, future ui-agent task; this is only the toggle/style
+# itself is separate future work; this is only the toggle/style
 # state the HUD would read)
 # ---------------------------------------------------------------------------
 
@@ -232,6 +236,11 @@ class StatsHudState:
     corner: str = "Top Right"
     scale: float = 1.0
     color: Tuple[float, float, float, float] = (0.93, 0.94, 0.96, 1.0)
+    # Background transparency for the Stats box's rounded-rect card --
+    # independent of `color` (which is the text color only). 0 = fully
+    # see-through, 1 = fully opaque. See panels/overlay.py's stats card for
+    # the slider and hud_overlay.py's _draw_stats_box for the consumer.
+    bg_alpha: float = 0.55
 
 
 @dataclass
@@ -245,10 +254,16 @@ class CrosshairState:
 
 @dataclass
 class StatusIndicatorsState:
+    """Two themed count badges -- Remapper and Macros -- each showing how
+    many of that module's entries are currently *enabled* (not the total
+    configured count; a status indicator should reflect what's live right
+    now). Replaces the earlier show_remap_status/show_macro_status/
+    show_profile_name 3-toggle model, which didn't fit a count-based,
+    two-badge design -- no profile-name indicator in this design."""
+
     enabled: bool = False
-    show_remap_status: bool = True
-    show_macro_status: bool = True
-    show_profile_name: bool = True
+    show_remap_badge: bool = True
+    show_macro_badge: bool = True
     corner: str = "Bottom Left"
     scale: float = 1.0
 
@@ -265,15 +280,63 @@ class OverlayState:
 # ---------------------------------------------------------------------------
 
 
+class UpdateStatus(Enum):
+    """Mirrors R9Tools' informal `_appState` string states (see its
+    panels/settings.py), formalized as an enum here per updater.py's module
+    docstring. Read/written every frame by updater.UpdateManager.sync_to()
+    -- see main.py's `_show_gui` for the call site (same spot
+    remapper_engine.update_snapshot()/macro_engine's own equivalents are
+    called) -- never set directly from a background thread."""
+
+    IDLE = "idle"
+    CHECKING = "checking"
+    UP_TO_DATE = "up_to_date"
+    AVAILABLE = "available"
+    DOWNLOADING = "downloading"
+    READY = "ready"
+    INSTALLING = "installing"
+    ERROR = "error"
+
+
 @dataclass
 class SettingsState:
     theme_name: str = "dark"
-    ui_scale: float = 1.0
     reduce_motion: bool = False
-    # Placeholder Updates area -- build-agent's self-updater doesn't exist yet.
-    updates_channel: str = "Stable"
+    # Color Cycle theme config (see theme.py's COLOR_CYCLE /
+    # resolve_color_cycle_theme) -- only meaningful while theme_name ==
+    # "color_cycle"; harmless dead data otherwise. Defaults reuse Dark's own
+    # accent and Violet's own accent (both already contrast-validated
+    # individually in theme.py) rather than arbitrary new hues.
+    cycle_color_a: Tuple[float, float, float, float] = field(default_factory=lambda: hex_rgba("#3D6FD1"))
+    cycle_color_b: Tuple[float, float, float, float] = field(default_factory=lambda: hex_rgba("#7C5CE0"))
+    # Full back-and-forth cycle length in seconds -- a slow ambient drift,
+    # never fast/strobing (see panels/settings.py's slider bounds, which
+    # keep even the "fastest" end of the range in this same slow territory).
+    cycle_period_sec: float = 20.0
+    # Seconds fed into theme.color_cycle_phase() -- advanced by shell.py
+    # each frame using imgui's delta_time, but ONLY while reduce_motion is
+    # off (see shell.py's render_frame). Reduce Motion freezes the
+    # animation by simply not advancing this, rather than the resolver
+    # needing to know about reduce_motion itself.
+    cycle_elapsed_sec: float = 0.0
+    # Updates -- see updater.py (the self-updater, GitHub Releases
+    # based) and panels/settings.py's _render_updates. `update_status` /
+    # `update_latest_version` / `update_download_pct` / `update_error_message`
+    # / `last_checked_display` are all written by updater.update_manager's
+    # sync_to() call in main.py, never edited directly by any panel.
     check_for_updates_on_launch: bool = True
     last_checked_display: str = "Never checked"
+    update_status: UpdateStatus = UpdateStatus.IDLE
+    update_latest_version: str = ""
+    update_download_pct: int = 0
+    update_error_message: str = ""
+    # True for exactly one automatic check-on-launch result per session, from
+    # the moment a newer release is found until the user picks "Update Now"
+    # or "Later" in the prompt panels/settings.py's render_auto_update_prompt
+    # draws (see shell.py's call site) -- "Later" only clears this flag, it
+    # never touches check_for_updates_on_launch (per R9Tools' README-
+    # documented behavior: skip for the session, not disable the setting).
+    auto_update_prompt_pending: bool = False
 
 
 # ---------------------------------------------------------------------------

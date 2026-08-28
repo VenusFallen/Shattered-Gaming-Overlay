@@ -5,10 +5,10 @@ Uses ctypes vtable calls only -- no extra dependencies beyond the Windows OS.
 Only the exact methods the HUD overlay needs are implemented. Vtable offsets
 are fixed by the Windows SDK ABI and do not change across D3D11 versions.
 
-Adapted from R9Tools' dx11_bridge.py (same author, same technique -- see
-.claude/agents/ui-agent.md for why this project reuses that pattern rather
-than rediscovering COM vtable offsets from scratch). This file is otherwise
-generic Win32/DX11 plumbing with nothing game- or project-specific in it.
+Adapted from R9Tools' dx11_bridge.py (same author, same technique -- reused
+here rather than rediscovering COM vtable offsets from scratch). This file
+is otherwise generic Win32/DX11 plumbing with nothing game- or
+project-specific in it.
 """
 
 from __future__ import annotations

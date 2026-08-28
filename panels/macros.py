@@ -1,16 +1,19 @@
 """panels/macros.py -- Macros panel: named trigger -> step-sequence macros
 with Once/Hold/Toggle modes and a humanize-jitter knob. Purely UI state
 (app_state.MacroDef/MacroStep); no recording/playback happens here -- that's
-engine-agent's future macro_engine.py.
+the future macro_engine.py's job.
 """
 
 from __future__ import annotations
+
+from typing import List
 
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
 import widgets
 from app_state import MacroMode, MacroStepKind
+from macro_recorder import RecordedStep, macro_recorder
 from panel_context import PanelContext
 
 _MODE_LABELS = [m.value for m in MacroMode]
@@ -76,11 +79,76 @@ def _handle_step_key_capture(ctx: PanelContext, step) -> None:
         state.capturing_step_id = step.id
 
 
+def _apply_recorded_steps(macro, recorded: List[RecordedStep]) -> None:
+    """Append recorded steps to `macro.steps` via macro.add_step() so ID
+    generation stays centralized in app_state.py -- never construct
+    MacroStep directly here. Non-destructive: whatever was already in
+    macro.steps is left untouched, same spirit as per-step delete being the
+    only way to remove something."""
+    for r in recorded:
+        step = macro.add_step()
+        step.kind = r.kind
+        step.key = r.key
+        step.mouse_button = r.mouse_button
+        step.scroll_delta = r.scroll_delta
+        step.delay_ms = r.delay_ms
+
+
+def _handle_recording(ctx: PanelContext, macro) -> None:
+    """Record button starts a macro_recorder session tied to this macro's
+    id; Stop (the primary, expected way to end it) converts the buffered
+    session into real steps and appends them. Escape also stops -- matching
+    this file's own bind-capture convention -- but cancels/discards instead
+    of committing, since Escape is reserved as this Companion window's
+    universal cancel key and was never itself recorded as a step (see
+    macro_recorder.py's docstring)."""
+    theme = ctx.theme
+    state = ctx.state.macros
+    is_recording_this = state.recording_macro_id == macro.id
+    other_recording = state.recording_macro_id is not None and not is_recording_this
+
+    if is_recording_this:
+        if imgui.is_key_pressed(imgui.Key.escape):
+            macro_recorder.cancel()
+            state.recording_macro_id = None
+            return
+        # Trigger on mouse-DOWN (is_item_activated), not the button's own
+        # release-triggered "clicked" return -- stops recording as early as
+        # possible so the click's own mouse-up can never be buffered as a
+        # trailing step. See macro_recorder.py's docstring/_convert_events
+        # for the other half of this fix (discarding an already-open click).
+        imgui.button(f"{fa.ICON_FA_STOP_CIRCLE}  Stop")
+        if imgui.is_item_activated():
+            recorded = macro_recorder.stop()
+            _apply_recorded_steps(macro, recorded)
+            state.recording_macro_id = None
+        else:
+            imgui.same_line()
+            elapsed = macro_recorder.elapsed_seconds()
+            # "info" level, not "error"/"warn" -- an active recording is a
+            # normal state to be in, not a problem, so it's styled plainly
+            # (icon + label, no alarm color) same as every other status
+            # badge in this project.
+            widgets.status_badge(theme, "info", f"Recording... {elapsed:0.1f}s  (Esc to cancel)")
+    else:
+        if other_recording:
+            imgui.begin_disabled()
+        if imgui.button(f"{fa.ICON_FA_DOT_CIRCLE}  Record"):
+            macro_recorder.start()
+            state.recording_macro_id = macro.id
+        if other_recording:
+            imgui.end_disabled()
+        if other_recording and imgui.is_item_hovered():
+            imgui.set_tooltip("Another macro is currently recording -- stop it first.")
+
+
 def _render_steps(ctx: PanelContext, macro) -> None:
     theme = ctx.theme
     widgets.section_title("Steps")
     if imgui.button(f"{fa.ICON_FA_PLUS}  Add Step"):
         macro.add_step()
+    imgui.same_line()
+    _handle_recording(ctx, macro)
 
     remove_id = None
     for i, step in enumerate(macro.steps):
@@ -132,6 +200,11 @@ def _render_editor(ctx: PanelContext) -> None:
 
         imgui.set_next_item_width(280)
         changed, macro.name = imgui.input_text("Name", macro.name)
+        imgui.same_line()
+        imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
+        delete_clicked = imgui.button(f"{fa.ICON_FA_TRASH}##removemacro")
+        if imgui.is_item_hovered():
+            imgui.set_tooltip("Delete this macro")
 
         _, macro.enabled = widgets.labeled_toggle(theme, "Enabled", macro.enabled, ctx.state.settings.reduce_motion)
 
@@ -156,6 +229,18 @@ def _render_editor(ctx: PanelContext) -> None:
 
         imgui.spacing()
         _render_steps(ctx, macro)
+
+    if delete_clicked:
+        # Deferred to the end of the frame -- `macro` stays valid for
+        # everything rendered above this point even after removal, same
+        # "collect then act after" pattern _render_steps uses for its own
+        # per-step delete. If this macro was actively recording, stop that
+        # session too rather than leaving macro_recorder silently running
+        # with no way left in the UI to reach it (state.remove_macro already
+        # clears MacrosState.recording_macro_id, but not the recorder itself).
+        if state.recording_macro_id == macro.id:
+            macro_recorder.cancel()
+        state.remove_macro(macro.id)
 
 
 def render(ctx: PanelContext) -> None:

@@ -4,8 +4,8 @@ input_hooks.py -- pure user-mode input capture for Shattered Gaming Overlay.
 Wraps `SetWindowsHookEx(WH_KEYBOARD_LL / WH_MOUSE_LL, ...)` via `ctypes`.
 Deliberately dependency-free (no third-party hook library) so both the
 future overlay and future capture/bind-UI code can import this cleanly.
-No driver, no ViGEm, no game-process access -- see
-.claude/agents/engine-agent.md for why.
+No driver, no ViGEm, no game-process access -- keeping to the project's
+hard rule against any of that.
 
 Public API
 ----------
@@ -43,9 +43,9 @@ CallNextHookEx and lets the event through. A registered callback may
 return `True` to suppress the event (stop it from reaching the rest of
 the system) -- this is intentionally exposed now because the remapper
 that gets built on top of this module will need it (to swallow the
-original key of a remap), not because this task implements remapping.
-With no callbacks, or callbacks that return None/False, nothing is ever
-blocked.
+original key of a remap), not because this module itself implements
+remapping. With no callbacks, or callbacks that return None/False, nothing
+is ever blocked.
 
 Threading / timing gotcha
 --------------------------
