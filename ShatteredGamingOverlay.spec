@@ -38,11 +38,20 @@
 #     normal Analysis pass already discovers and bundles them (and the
 #     native _imgui_bundle*.pyd/glfw3.dll they load) without any
 #     hiddenimports help at all.
-#   - uac_admin is NOT set (defaults to False/unset) -- unlike R9Tools, this
-#     app has no Interception driver and no requireAdministrator manifest
-#     anywhere in the source (confirmed via grep across the repo); it uses
-#     plain SetWindowsHookEx-based hooks (input_hooks.py) which don't need
-#     elevation for a same-session target window.
+#   - uac_admin=True IS set on the EXE() below, unlike the original build
+#     (which left it unset -- no Interception driver, no requireAdministrator
+#     manifest, plain SetWindowsHookEx-based hooks that don't need elevation
+#     for a same-session target window). That reasoning still holds for
+#     input capture/injection, but stats_poller.py's FPS tracking
+#     (PresentMon, real-time ETW trace session) does not work without
+#     elevation -- confirmed by direct repro: PresentMon fails immediately
+#     with "access denied" starting the trace session when not elevated,
+#     which matches PresentMon's own `-restart_as_admin` flag existing
+#     specifically to handle "not running elevated" as the expected common
+#     case. The user chose whole-app elevation over self-elevating only the
+#     PresentMon subprocess, so the exe now requests admin at launch via its
+#     own manifest (a UAC prompt every launch) rather than deferring that
+#     prompt to whenever FPS tracking first starts.
 import os
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_dynamic_libs
 
@@ -141,4 +150,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['assets\\icon.ico'],
+    # See the module-docstring bullet above -- FPS tracking (PresentMon)
+    # needs an elevated ETW trace session, so the whole app now requests
+    # admin at launch rather than running unprivileged.
+    uac_admin=True,
 )

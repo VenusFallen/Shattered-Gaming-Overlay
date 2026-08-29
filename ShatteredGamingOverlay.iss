@@ -18,12 +18,24 @@
 ;     runs with IsRing0Enabled = False (confirmed in stats_poller.py), so
 ;     LHM needs no separate driver install either -- only its DLLs, which
 ;     ship as plain data files via the [Files] section below.
-;   - uac_admin / PrivilegesRequired=admin / the shellexec elevation
-;     workaround on the post-install [Run] entry. This project's exe has no
-;     requireAdministrator manifest (confirmed via grep across the repo --
-;     no driver means no elevation requirement), so PrivilegesRequired is
-;     left at Inno Setup's default (lowest) and the [Run]/relaunch entries
-;     use plain launches, not ShellExec.
+;   - The shellexec elevation workaround R9Tools.iss needed on its
+;     post-install [Run] entry. Both this installer and the app it installs
+;     now run at the SAME privilege level (both admin -- see PrivilegesRequired
+;     below and ShatteredGamingOverlay.spec's uac_admin=True), so there's no
+;     privilege mismatch to bridge with ShellExec's runas verb; a plain
+;     launch (Exec/[Run] Filename=) already runs at the right level.
+;     (uac_admin / PrivilegesRequired=admin themselves ARE carried over now,
+;     unlike the original build of this file -- see the note below.)
+;
+; PrivilegesRequired=admin (set below) is a deliberate CHANGE from this
+; project's original no-elevation design -- everything else in the app
+; (input hooks, LibreHardwareMonitor with IsRing0Enabled=False) still needs
+; no elevation at all, but stats_poller.py's FPS tracking (PresentMon, a
+; real-time ETW trace session) does: confirmed by direct repro, PresentMon
+; fails immediately with "access denied" unless elevated. Rather than
+; self-elevate only the PresentMon subprocess (which would mean a UAC prompt
+; only the first time FPS tracking starts), the whole app now requests admin
+; at launch, so the installer needs to match that privilege level too.
 ;   - AppMutex=R9Tools_AppMutex. R9Tools' main.py creates and holds a named
 ;     mutex for its whole lifetime specifically so CloseApplications=yes can
 ;     target it; main.py in this project does not create an equivalent
@@ -64,6 +76,12 @@ UninstallDisplayIcon={app}\ShatteredGamingOverlay.exe
 ; Require Windows 10 or later
 MinVersion=10.0
 
+; See the header comment above -- the app itself now requires admin
+; (ShatteredGamingOverlay.spec's uac_admin=True, for PresentMon/FPS
+; tracking), so the installer matches that privilege level explicitly
+; rather than relying on whatever Inno Setup's own default happens to be.
+PrivilegesRequired=admin
+
 ; See the deliberately-not-carried-over note above re: no AppMutex yet.
 CloseApplications=yes
 ; Setup's own post-close auto-relaunch is disabled in favor of this script's
@@ -95,8 +113,9 @@ Name: desktopicon; Description: "Create a desktop shortcut"; GroupDescription: "
 
 [Run]
 ; Launch Shattered Gaming Overlay after install (optional, user can uncheck).
-; No shellexec needed here (unlike R9Tools) -- this app's exe has no
-; requireAdministrator manifest, so a plain postinstall launch works fine.
+; No shellexec needed here -- installer and app are both admin now (see the
+; header comment / PrivilegesRequired above), so a plain postinstall launch
+; already runs at the right privilege level.
 Filename: "{app}\ShatteredGamingOverlay.exe"; Description: "Launch Shattered Gaming Overlay"; \
     Flags: nowait postinstall skipifsilent
 

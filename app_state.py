@@ -249,6 +249,16 @@ class CrosshairState:
     style: str = "Cross"
     size: float = 12.0
     thickness: float = 2.0
+    # Cross/T-Shape: distance from center to where each arm starts -- 0
+    # means the arms touch at the center, forming an unbroken plus/T instead
+    # of the old fixed size*0.25 gap. Circle + Dot: an independent offset
+    # added to the ring's radius (on top of `size`), so the ring can be
+    # pushed closer to or further from the center dot without changing the
+    # dot's own size (still size*0.15, see hud_overlay.py) or the ring's
+    # thickness (`thickness` above) -- one dedicated control for "how far
+    # apart", separate from the two controls for "how big". Unused by Dot
+    # and plain Circle.
+    gap: float = 3.0
     color: Tuple[float, float, float, float] = (0.24, 0.86, 0.52, 1.0)
 
 

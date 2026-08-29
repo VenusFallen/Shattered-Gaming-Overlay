@@ -139,6 +139,13 @@ def _render_crosshair(ctx: PanelContext) -> None:
         imgui.set_next_item_width(200)
         _, thickness_int = imgui.slider_int("Thickness##crosshair", int(s.thickness), 1, 8, "%d px")
         s.thickness = float(thickness_int)
+        imgui.set_next_item_width(200)
+        _, s.gap = imgui.slider_float("Gap##crosshair", s.gap, 0.0, 24.0, "%.0f px")
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Cross/T-Shape: space at the center -- 0 makes an unbroken plus/T.\n"
+                "Circle + Dot: how far the ring sits from the center dot."
+            )
         _, s.color, _ = widgets.hex_color_picker(theme, "crosshair-color", "Color", s.color)
 
 

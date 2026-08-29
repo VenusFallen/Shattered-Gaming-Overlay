@@ -150,6 +150,7 @@ class _CrosshairSnapshot:
     style: str = "Cross"
     size: float = 12.0
     thickness: float = 2.0
+    gap: float = 3.0
     color: tuple = (0.24, 0.86, 0.52, 1.0)
 
 
@@ -345,6 +346,7 @@ class HudOverlay:
             style=str(crosshair_state.style),
             size=float(crosshair_state.size),
             thickness=float(crosshair_state.thickness),
+            gap=float(crosshair_state.gap),
             color=tuple(crosshair_state.color),
         )
         with self._lock:
@@ -663,6 +665,7 @@ class HudOverlay:
         style = snap.style
         size = max(1.0, snap.size)
         thick = max(0.5, snap.thickness)
+        gap = max(0.0, snap.gap)
         fg = snap.color
         bg = _BLACK
 
@@ -689,15 +692,19 @@ class HudOverlay:
             return
 
         if style == "Circle + Dot":
-            r.draw_circle(cx, cy, size, bg, thickness=thick + outline * 2)
-            r.draw_circle(cx, cy, size, fg, thickness=thick)
+            # `gap` is an independent offset on top of `size` here -- moves
+            # the ring closer to/further from the center dot without
+            # changing the dot's own radius (still size*0.15 below) or the
+            # ring's thickness (`thick`, set by the Thickness slider).
+            ring_radius = size + gap
+            r.draw_circle(cx, cy, ring_radius, bg, thickness=thick + outline * 2)
+            r.draw_circle(cx, cy, ring_radius, fg, thickness=thick)
             dot_radius = max(1.5, size * 0.15)
             r.draw_circle_filled(cx, cy, dot_radius + outline, bg)
             r.draw_circle_filled(cx, cy, dot_radius, fg)
             return
 
         if style == "T-Shape":
-            gap = max(2.0, size * 0.25)
             ow = thick + outline * 2
             # Horizontal bar (left + right arms) + a single vertical arm
             # below center -- no arm above center, forming a "T".
@@ -710,8 +717,8 @@ class HudOverlay:
             r.draw_line(cx, cy + gap, cx, cy + gap + size, thick, fg)
             return
 
-        # Default: "Cross" -- 4 arms with a small center gap.
-        gap = max(2.0, size * 0.25)
+        # Default: "Cross" -- 4 arms, `gap` apart at the center (0 = the
+        # arms touch, forming an unbroken plus rather than an open cross).
         ow = thick + outline * 2
 
         def draw_cross(col, w):
