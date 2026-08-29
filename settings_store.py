@@ -1,6 +1,8 @@
 """settings_store.py -- save/load global app preferences to a single JSON
-file on disk (`settings.json`, repo-root, gitignored -- same convention as
-profiles.py's `profiles.json`).
+file on disk (`settings.json` under `%LOCALAPPDATA%\\Shattered Gaming
+Overlay\\` -- see SETTINGS_FILE's own comment for why; same location as
+profiles.py's `profiles.json` and updater.py's install logs, gitignored
+when running from source).
 
 Deliberately separate from profiles.py: `AppState.settings` is app-wide
 preference (theme, reduce motion, the Color Cycle config, update-check
@@ -19,12 +21,19 @@ identical in spirit on purpose.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 from typing import Tuple
 
 from app_state import AppState
 
-SETTINGS_FILE = Path(__file__).resolve().parent / "settings.json"
+# NOT Path(__file__).resolve().parent -- see profiles.py's PROFILES_FILE
+# comment for the full explanation: that resolves to PyInstaller onefile's
+# ephemeral per-launch extraction temp dir in the actual frozen build,
+# which never persists across launches. Same %LOCALAPPDATA% location
+# updater.py's _log_dir() and profiles.py's PROFILES_FILE already use.
+SETTINGS_FILE = Path(os.getenv("LOCALAPPDATA") or tempfile.gettempdir()) / "Shattered Gaming Overlay" / "settings.json"
 
 RGBA = Tuple[float, float, float, float]
 

@@ -1,8 +1,9 @@
 """profiles.py -- save/load/delete named profiles (Remapper entries, Macro
-defs, Window Select target) to a single JSON file on disk (`profiles.json`,
-repo-root, already in .gitignore -- mirrors R9Tools' profiles.py convention,
-minus its Interception/recoil/rapidfire-specific fields, which this project
-deliberately has none of).
+defs, Window Select target) to a single JSON file on disk (`profiles.json`
+under `%LOCALAPPDATA%\\Shattered Gaming Overlay\\` -- see PROFILES_FILE's own
+comment for why it's not repo-root/exe-relative -- mirrors R9Tools'
+profiles.py convention, minus its Interception/recoil/rapidfire-specific
+fields, which this project deliberately has none of).
 
 Safety pattern ("always starts disabled, you opt back in")
 -------------------------------------------------------------
@@ -35,6 +36,8 @@ from __future__ import annotations
 import copy
 import itertools
 import json
+import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -51,7 +54,15 @@ from app_state import (
 )
 from key_capture import KeyBind, UNBOUND
 
-PROFILES_FILE = Path(__file__).resolve().parent / "profiles.json"
+# NOT Path(__file__).resolve().parent -- that's the repo directory when
+# running from source, but resolves to PyInstaller onefile's ephemeral
+# per-launch extraction temp dir (sys._MEIPASS) in the actual frozen build,
+# which is deleted when the app exits. Confirmed by direct repro: profiles
+# were silently never persisting in the real installed app at all. Mirrors
+# updater.py's _log_dir(), which already uses this same %LOCALAPPDATA%
+# location correctly (confirmed working -- its logs/ subfolder is real and
+# persists across launches).
+PROFILES_FILE = Path(os.getenv("LOCALAPPDATA") or tempfile.gettempdir()) / "Shattered Gaming Overlay" / "profiles.json"
 DEFAULT_NAME = "Default"
 
 _fallback_counter = itertools.count(1)
