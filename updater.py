@@ -47,15 +47,16 @@ What's different from R9Tools here:
 
 from __future__ import annotations
 
+import ctypes
 import io
 import json
 import logging
 import os
-import subprocess
 import sys
 import tempfile
 import threading
 import zipfile
+from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -245,6 +246,144 @@ def _build_relaunch_command(pid: int, installer_path: Path, install_args: list[s
     )
 
 
+def _quote_cmdline_arg(value: str) -> str:
+    """
+    Quote ``value`` as a single Win32 command-line argument, following the
+    same rules `CommandLineToArgvW` uses to parse a command line back apart
+    (the rules `ShellExecuteExW`'s `lpParameters` is parsed with) -- NOT
+    `_quote_ps_single`'s PowerShell single-quoted-string rules above, which
+    operate one layer further in, inside a `-Command` string that has
+    already survived this outer layer intact.
+
+    A run of N backslashes immediately followed by a literal `"` becomes
+    2N+1 backslashes then a `"` (escaping both the quote and every
+    backslash guarding it); a run of N backslashes at the very end of the
+    argument (immediately before the closing quote this function adds)
+    becomes 2N backslashes (escaping only themselves, since there's no
+    literal `"` after them to protect). This is the identical
+    Microsoft-documented algorithm CPython's own
+    `subprocess.list2cmdline` implements -- reproduced here rather than
+    imported from `subprocess` so this stays a small, pure, standalone
+    function usable with `ShellExecuteExW`'s single-string `lpParameters`
+    (subprocess's own version is only reachable via its argv-list APIs).
+    """
+    if value and not any(c in value for c in ' \t\n\v"'):
+        return value
+    out = ['"']
+    n_backslashes = 0
+    for ch in value:
+        if ch == "\\":
+            n_backslashes += 1
+        elif ch == '"':
+            out.append("\\" * (n_backslashes * 2 + 1))
+            out.append('"')
+            n_backslashes = 0
+        else:
+            out.append("\\" * n_backslashes)
+            out.append(ch)
+            n_backslashes = 0
+    out.append("\\" * (n_backslashes * 2))
+    out.append('"')
+    return "".join(out)
+
+
+def _build_shell_execute_parameters(ps_command: str) -> str:
+    """
+    Build the single `lpParameters` string `ShellExecuteExW` expects for
+    launching ``powershell.exe -NoProfile -NonInteractive -ExecutionPolicy
+    Bypass -WindowStyle Hidden -Command <ps_command>``.
+
+    `lpParameters` is one raw command-line string parsed by
+    `CommandLineToArgvW`, not the argv list the old `subprocess.Popen` call
+    used -- each argument (including ``ps_command`` itself, which already
+    contains its own inner PowerShell single-quoting from
+    `_build_relaunch_command`/`_quote_ps_single`) is quoted independently
+    via `_quote_cmdline_arg` so this outer layer can't corrupt anything
+    `_build_relaunch_command` already produced.
+    """
+    args = [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy", "Bypass",
+        "-WindowStyle", "Hidden",
+        "-Command", ps_command,
+    ]
+    return " ".join(_quote_cmdline_arg(a) for a in args)
+
+
+# ---------------------------------------------------------------------------
+# ShellExecuteExW ("runas") bindings -- see launch_installer_and_quit()'s
+# docstring for why elevation is triggered here instead of via a
+# subprocess.Popen'd watcher. Raw ctypes, no pywin32, matching this
+# project's established convention (tray_icon.py, titlebar.py,
+# window_select.py). Declared at module scope, same as window_select.py's
+# own user32/dwmapi bindings, rather than gated behind an
+# `if sys.platform == "win32"` import guard -- this project's Win32-backed
+# modules already assume a Windows host to import cleanly (see
+# window_select.py), so matching that precedent here rather than inventing
+# a new one.
+# ---------------------------------------------------------------------------
+
+_SW_HIDE = 0
+
+if sys.platform == "win32":
+    _shell32_ex = ctypes.WinDLL("shell32", use_last_error=True)
+
+    class _SHELLEXECUTEINFOW(ctypes.Structure):
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("fMask", wintypes.ULONG),
+            ("hwnd", wintypes.HWND),
+            ("lpVerb", wintypes.LPCWSTR),
+            ("lpFile", wintypes.LPCWSTR),
+            ("lpParameters", wintypes.LPCWSTR),
+            ("lpDirectory", wintypes.LPCWSTR),
+            ("nShow", ctypes.c_int),
+            ("hInstApp", wintypes.HINSTANCE),
+            ("lpIDList", ctypes.c_void_p),
+            ("lpClass", wintypes.LPCWSTR),
+            ("hkeyClass", wintypes.HKEY),
+            ("dwHotKey", wintypes.DWORD),
+            # Union with hMonitor in the real struct; this call never uses
+            # the icon/monitor variant, so a plain HANDLE field is enough.
+            ("hIcon", wintypes.HANDLE),
+            ("hProcess", wintypes.HANDLE),
+        ]
+
+    _shell32_ex.ShellExecuteExW.argtypes = (ctypes.POINTER(_SHELLEXECUTEINFOW),)
+    _shell32_ex.ShellExecuteExW.restype = wintypes.BOOL
+
+
+def _shell_execute_runas(lpFile: str, lpParameters: str) -> None:
+    """
+    Launch ``lpFile`` elevated (UAC "runas" verb) via `ShellExecuteExW`,
+    called from this (still-alive, foreground, interactive) process. Raises
+    OSError on failure, mirroring how a failed `subprocess.Popen` call would
+    have surfaced to `launch_installer_and_quit`'s caller.
+    """
+    info = _SHELLEXECUTEINFOW()
+    info.cbSize = ctypes.sizeof(_SHELLEXECUTEINFOW)
+    info.fMask = 0
+    info.hwnd = None
+    info.lpVerb = "runas"
+    info.lpFile = lpFile
+    info.lpParameters = lpParameters
+    info.lpDirectory = None
+    info.nShow = _SW_HIDE
+    info.hInstApp = None
+    info.lpIDList = None
+    info.lpClass = None
+    info.hkeyClass = None
+    info.dwHotKey = 0
+    info.hIcon = None
+    info.hProcess = None
+
+    ok = _shell32_ex.ShellExecuteExW(ctypes.byref(info))
+    if not ok:
+        err = ctypes.get_last_error()
+        raise OSError(f"ShellExecuteExW(runas) failed: WinError {err}")
+
+
 def _log_dir() -> Path:
     """%LOCALAPPDATA%\\Shattered Gaming Overlay\\logs -- this project has no
     crash_logging.py module (unlike R9Tools) to source this path from, so it
@@ -260,32 +399,43 @@ def launch_installer_and_quit(installer_path: Path) -> None:
     Hand off to the extracted installer, then return so the caller can quit
     the app.
 
-    This does NOT launch the installer directly. It spawns a detached
-    PowerShell watcher that first runs ``Wait-Process -Id <this pid>``
-    (captured via os.getpid() before any quitting happens, with a 10s
+    This does NOT launch the installer directly. It elevates and starts a
+    detached PowerShell watcher that first runs ``Wait-Process -Id <this
+    pid>`` (captured via os.getpid() before any quitting happens, with a 10s
     safety-net timeout) and only starts the installer once that resolves --
     i.e. once this process has actually, fully terminated, not merely been
     asked to quit.
 
-    Why (ported verbatim from R9Tools' own hard-won fix -- see its
-    updater.py): a naive version of this raced an installer's file-copy step
-    against this process's own file lock on its exe/dlls actually releasing.
-    R9Tools originally tried to close that race with only its own
-    Inno-Setup-side `CloseApplications=yes` + `AppMutex` (Restart Manager
-    closing the app), and a real failed-update install log showed that
-    assumption was wrong -- the installer's own AppMutex check can abort
-    within milliseconds of launch, faster than a Restart-Manager-mediated
-    close-and-wait can complete. Guaranteeing real process death before the
-    installer even starts (this watcher) removes the race entirely instead
-    of trying to win it.
+    Why the Wait-Process watcher exists at all (ported verbatim from
+    R9Tools' own hard-won fix -- see its updater.py): a naive version of
+    this raced an installer's file-copy step against this process's own
+    file lock on its exe/dlls actually releasing. R9Tools originally tried
+    to close that race with only its own Inno-Setup-side
+    `CloseApplications=yes` + `AppMutex` (Restart Manager closing the app),
+    and a real failed-update install log showed that assumption was wrong
+    -- the installer's own AppMutex check can abort within milliseconds of
+    launch, faster than a Restart-Manager-mediated close-and-wait can
+    complete. Guaranteeing real process death before the installer even
+    starts (this watcher) removes the race entirely instead of trying to
+    win it.
 
-    Known gap versus R9Tools right now: this project has no installer/.iss
-    script yet (out of scope for now), so there is no
-    AppMutex/CloseApplications=yes defense-in-depth on the installer
-    side either. The Wait-Process watcher below is the ONLY thing closing
-    this race for now; once an .iss installer exists, mirroring R9Tools'
-    AppMutex + CloseApplications=yes there is recommended as the same
-    belt-and-suspenders safety net, not a replacement for this watcher.
+    Why the watcher is launched via `ShellExecuteExW("runas", ...)` instead
+    of a plain `subprocess.Popen`: since v1.1.3/1.1.4 the installed app (and
+    its installer) require admin elevation (PresentMon's FPS tracking needs
+    an elevated ETW trace session -- see ShatteredGamingOverlay.spec/.iss).
+    A `subprocess.Popen`'d, non-elevated PowerShell watcher trying to
+    `Start-Process` an admin-manifested installer forces Windows to broker a
+    UAC prompt from deep inside a detached, no-window, job-broken-away
+    background process -- confirmed live to fail silently (the UAC
+    `consent.exe` process appears but the prompt never reaches the user's
+    interactive desktop, the installer never runs, and nothing is left
+    hung). `ShellExecuteExW`'s `runas` verb, called here, while this process
+    is still alive and still owns a normal foreground GUI window, is the
+    same mechanism Explorer's own "Run as administrator" uses and reliably
+    surfaces the UAC dialog on the correct interactive session. Once the
+    user approves that one prompt, the resulting PowerShell process is
+    already elevated, so its own later `Start-Process` on the installer
+    inherits that elevation with no second prompt.
 
     The caller should still make the app quit (e.g.
     `hi.get_runner_params().app_shall_exit = True`, mirroring titlebar.py's
@@ -303,10 +453,11 @@ def launch_installer_and_quit(installer_path: Path) -> None:
                               so a silent update attempt (successful or not)
                               leaves a real diagnostic trail
 
-    The PowerShell watcher is started detached from this process (new
-    process group, breakaway from any job object this process might be part
-    of) so it survives this process exiting, and the installer it eventually
-    launches inherits that same detachment via Start-Process.
+    The PowerShell watcher itself still runs hidden (`-WindowStyle Hidden`
+    plus `ShellExecuteExW`'s own `nShow=SW_HIDE`) and detached -- only the
+    OS-owned UAC consent dialog is ever shown to the user; the installer it
+    eventually launches via `Start-Process` inherits that same
+    detachment/elevation.
     """
     if sys.platform != "win32":
         raise RuntimeError("Installer handoff is only supported on Windows")
@@ -316,17 +467,6 @@ def launch_installer_and_quit(installer_path: Path) -> None:
         raise RuntimeError(f"Installer not found at {installer_path}")
 
     my_pid = os.getpid()
-
-    # CREATE_NO_WINDOW, not DETACHED_PROCESS: this spawns powershell.exe, a
-    # console-subsystem executable. DETACHED_PROCESS gives it no console at
-    # all, which makes it fail to start with no error surfaced anywhere
-    # (per R9Tools' own confirmed-by-direct-reproduction note);
-    # CREATE_NO_WINDOW gives it a console but keeps it hidden.
-    creationflags = (
-        subprocess.CREATE_NO_WINDOW
-        | subprocess.CREATE_NEW_PROCESS_GROUP
-        | subprocess.CREATE_BREAKAWAY_FROM_JOB
-    )
 
     log_path = None
     try:
@@ -344,19 +484,9 @@ def launch_installer_and_quit(installer_path: Path) -> None:
         install_args.append(f"/LOG={log_path}")
 
     ps_command = _build_relaunch_command(my_pid, installer_path, install_args)
+    lp_parameters = _build_shell_execute_parameters(ps_command)
 
-    subprocess.Popen(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden",
-            "-Command", ps_command,
-        ],
-        creationflags=creationflags,
-        close_fds=True,
-    )
+    _shell_execute_runas("powershell.exe", lp_parameters)
 
 
 # ---------------------------------------------------------------------------
