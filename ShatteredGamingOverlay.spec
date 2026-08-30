@@ -106,7 +106,14 @@ exe = EXE(
     strip=False,
     upx=True,
     upx_exclude=[],
-    runtime_tmpdir=None,
+    # TEMPORARY debug instrumentation (2026-08-30) -- fixed, non-random,
+    # never-auto-deleted extraction dir instead of the default random
+    # %TEMP%\_MEI<n> so a crashed relaunch's actual extracted contents can
+    # be inspected afterward. The default random temp folder is gone
+    # within moments of a crash, which has blocked diagnosing the
+    # post-update "Failed to load Python DLL" bug directly. Revert to
+    # runtime_tmpdir=None once that's root-caused.
+    runtime_tmpdir=r'C:\Users\VenusFallen\SGO_debug_extract',
     console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
