@@ -24,3 +24,6 @@ venv/
 
 # Agent behavior rules -- local to this machine, not shared project config.
 agent-rules.md
+
+# Claude Code project config -- local to this machine, not shared project config.
+.claude/
