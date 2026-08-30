@@ -1,12 +1,13 @@
 """profiles.py -- save/load/delete named profiles (Remapper entries, Macro
-defs, Window Select target) to a single JSON file on disk (`profiles.json`
-under `%LOCALAPPDATA%\\Shattered Gaming Overlay\\` -- see PROFILES_FILE's own
-comment for why it's not repo-root/exe-relative -- mirrors R9Tools'
-profiles.py convention, minus its Interception/recoil/rapidfire-specific
-fields, which this project deliberately has none of).
+defs, Window Select target, and Overlay config) to a single JSON file on
+disk (`profiles.json` under `%LOCALAPPDATA%\\Shattered Gaming Overlay\\` --
+see PROFILES_FILE's own comment for why it's not repo-root/exe-relative --
+mirrors R9Tools' profiles.py convention, minus its Interception/recoil/
+rapidfire-specific fields, which this project deliberately has none of).
 
-Safety pattern ("always starts disabled, you opt back in")
--------------------------------------------------------------
+Safety pattern ("always starts disabled, you opt back in") -- Remapper/
+Macros/Window Select only
+-------------------------------------------------------------------------
 Mirrors R9Tools' `loadProfile()`, but per-module instead of unconditional:
 on `apply_profile()`, every Remapper entry's `enabled` is forced False
 unless the profile's `persist_remapper` flag is set, every Macro's
@@ -17,18 +18,27 @@ is applied -- both a fresh-launch `load_all()` and a user clicking Load in
 panels/profiles.py go through this same `apply_profile()` call, so there is
 exactly one code path that can restore a profile's live state.
 
+Overlay config (crosshair, Stats HUD, status indicators) is deliberately
+NOT subject to this safety pattern -- it always restores fully on Load,
+no persist_* flag needed. The pattern above exists specifically because
+silently reactivating input injection (Remapper/Macros) or a window target
+is a real safety concern; the HUD overlay is a passive, non-injecting,
+read-only visual layer with no equivalent risk, so gating it the same way
+would just be friction for a "load my per-game crosshair" the whole feature
+exists for.
+
 Data shape
 ----------
 `AppState.profiles.profiles` (a list of `ProfileDef`) only ever carries
 per-profile *metadata* (id/name/protected/persist_* flags) -- it was
 designed as "the editable mirror" of what this module owns (see
 app_state.py's own docstring). The actual Remapper-entries/Macro-defs/
-Window-Select-target *payload* for every profile is owned here, in a
-module-level cache keyed by profile id, and is what actually gets
-serialized to/from profiles.json. `AppState.remapper` / `AppState.macros` /
-`AppState.window_select` only ever hold the CURRENTLY ACTIVE profile's live,
-editable state -- `save_profile()` is what snapshots that live state back
-into a profile's payload.
+Window-Select-target/Overlay-config *payload* for every profile is owned
+here, in a module-level cache keyed by profile id, and is what actually
+gets serialized to/from profiles.json. `AppState.remapper` / `AppState.macros`
+/ `AppState.window_select` / `AppState.overlay` only ever hold the CURRENTLY
+ACTIVE profile's live, editable state -- `save_profile()` is what snapshots
+that live state back into a profile's payload.
 """
 
 from __future__ import annotations
@@ -44,13 +54,17 @@ from typing import Dict, List, Optional, Tuple
 
 from app_state import (
     AppState,
+    CrosshairState,
     MacroDef,
     MacroMode,
     MacroStep,
     MacroStepKind,
+    OverlayState,
     ProcessInfo,
     ProfileDef,
     RemapEntry,
+    StatsHudState,
+    StatusIndicatorsState,
 )
 from key_capture import KeyBind, UNBOUND
 
@@ -74,8 +88,9 @@ def _fallback_id(prefix: str) -> str:
     return f"{prefix}-restored-{next(_fallback_counter)}"
 
 
-# A profile's actual saved payload: Remapper entries, Macro defs, and the
-# Window Select target (or None for Global). Kept separate from ProfileDef
+# A profile's actual saved payload: Remapper entries, Macro defs, the
+# Window Select target (or None for Global), and the Overlay config
+# (Stats HUD/crosshair/status indicators). Kept separate from ProfileDef
 # (metadata only) -- see module docstring.
 _ProfilePayload = Dict[str, object]
 
@@ -181,6 +196,111 @@ def _window_select_payload_from_json(d: Optional[dict]) -> Optional[dict]:
     }
 
 
+def _color_from_json(raw, fallback: tuple) -> tuple:
+    try:
+        r, g, b, a = raw
+        return (float(r), float(g), float(b), float(a))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _stats_hud_to_json(s: StatsHudState) -> dict:
+    return {
+        "enabled": s.enabled,
+        "show_cpu": s.show_cpu,
+        "show_gpu": s.show_gpu,
+        "show_ram": s.show_ram,
+        "show_fps": s.show_fps,
+        "corner": s.corner,
+        "scale": s.scale,
+        "color": list(s.color),
+        "bg_alpha": s.bg_alpha,
+    }
+
+
+def _stats_hud_from_json(d: Optional[dict]) -> StatsHudState:
+    d = d or {}
+    default = StatsHudState()
+    return StatsHudState(
+        enabled=bool(d.get("enabled", default.enabled)),
+        show_cpu=bool(d.get("show_cpu", default.show_cpu)),
+        show_gpu=bool(d.get("show_gpu", default.show_gpu)),
+        show_ram=bool(d.get("show_ram", default.show_ram)),
+        show_fps=bool(d.get("show_fps", default.show_fps)),
+        corner=str(d.get("corner", default.corner)),
+        scale=float(d.get("scale", default.scale)),
+        color=_color_from_json(d.get("color"), default.color) if "color" in d else default.color,
+        bg_alpha=float(d.get("bg_alpha", default.bg_alpha)),
+    )
+
+
+def _crosshair_to_json(c: CrosshairState) -> dict:
+    return {
+        "enabled": c.enabled,
+        "style": c.style,
+        "size": c.size,
+        "thickness": c.thickness,
+        "gap": c.gap,
+        "color": list(c.color),
+    }
+
+
+def _crosshair_from_json(d: Optional[dict]) -> CrosshairState:
+    d = d or {}
+    default = CrosshairState()
+    return CrosshairState(
+        enabled=bool(d.get("enabled", default.enabled)),
+        style=str(d.get("style", default.style)),
+        size=float(d.get("size", default.size)),
+        thickness=float(d.get("thickness", default.thickness)),
+        gap=float(d.get("gap", default.gap)),
+        color=_color_from_json(d.get("color"), default.color) if "color" in d else default.color,
+    )
+
+
+def _status_indicators_to_json(i: StatusIndicatorsState) -> dict:
+    return {
+        "enabled": i.enabled,
+        "show_remap_badge": i.show_remap_badge,
+        "show_macro_badge": i.show_macro_badge,
+        "corner": i.corner,
+        "scale": i.scale,
+    }
+
+
+def _status_indicators_from_json(d: Optional[dict]) -> StatusIndicatorsState:
+    d = d or {}
+    default = StatusIndicatorsState()
+    return StatusIndicatorsState(
+        enabled=bool(d.get("enabled", default.enabled)),
+        show_remap_badge=bool(d.get("show_remap_badge", default.show_remap_badge)),
+        show_macro_badge=bool(d.get("show_macro_badge", default.show_macro_badge)),
+        corner=str(d.get("corner", default.corner)),
+        scale=float(d.get("scale", default.scale)),
+    )
+
+
+def _overlay_to_json(o: OverlayState) -> dict:
+    return {
+        "stats_hud": _stats_hud_to_json(o.stats_hud),
+        "crosshair": _crosshair_to_json(o.crosshair),
+        "status_indicators": _status_indicators_to_json(o.status_indicators),
+    }
+
+
+def _overlay_from_json(d: Optional[dict]) -> OverlayState:
+    # `d` is missing entirely for any profile saved before Overlay config
+    # became part of the payload -- OverlayState()'s own defaults (Stats HUD
+    # off, no crosshair, no indicators) are the right fallback rather than
+    # raising or silently dropping the profile.
+    d = d or {}
+    return OverlayState(
+        stats_hud=_stats_hud_from_json(d.get("stats_hud")),
+        crosshair=_crosshair_from_json(d.get("crosshair")),
+        status_indicators=_status_indicators_from_json(d.get("status_indicators")),
+    )
+
+
 def _profile_from_json(raw: dict) -> Tuple[ProfileDef, _ProfilePayload]:
     profile = ProfileDef(
         id=str(raw.get("id") or _fallback_id("profile")),
@@ -194,6 +314,7 @@ def _profile_from_json(raw: dict) -> Tuple[ProfileDef, _ProfilePayload]:
         "entries": [_remap_entry_from_json(e) for e in raw.get("remapper", {}).get("entries", [])],
         "macros": [_macro_from_json(m) for m in raw.get("macros", {}).get("macros", [])],
         "window_select": _window_select_payload_from_json(raw.get("window_select")),
+        "overlay": _overlay_from_json(raw.get("overlay")),
     }
     return profile, payload
 
@@ -209,6 +330,7 @@ def _profile_payload_to_json(p: ProfileDef, payload: _ProfilePayload) -> dict:
         "remapper": {"entries": [_remap_entry_to_json(e) for e in payload.get("entries", [])]},  # type: ignore[arg-type]
         "macros": {"macros": [_macro_to_json(m) for m in payload.get("macros", [])]},  # type: ignore[arg-type]
         "window_select": payload.get("window_select"),
+        "overlay": _overlay_to_json(payload.get("overlay") or OverlayState()),  # type: ignore[arg-type]
     }
 
 
@@ -298,8 +420,10 @@ def load_all(app_state: AppState) -> None:
 
 
 def apply_profile(app_state: AppState, profile_id: str) -> bool:
-    """Restore `profile_id`'s saved Remapper/Macros/Window-Select payload
-    into the live AppState, applying the persist_* safety pattern. Used both
+    """Restore `profile_id`'s saved Remapper/Macros/Window-Select/Overlay
+    payload into the live AppState, applying the persist_* safety pattern to
+    Remapper/Macros/Window Select (Overlay is restored unconditionally --
+    see the module docstring's "Safety pattern" section for why). Used both
     by `load_all()` at startup and by panels/profiles.py's Load button --
     exactly one code path restores a profile's state."""
     profile = next((p for p in app_state.profiles.profiles if p.id == profile_id), None)
@@ -336,6 +460,9 @@ def apply_profile(app_state: AppState, profile_id: str) -> bool:
         app_state.window_select.selected = None
     app_state.window_select.selected_has_focus = False
 
+    overlay = payload.get("overlay")
+    app_state.overlay = overlay if isinstance(overlay, OverlayState) else OverlayState()  # type: ignore[assignment]
+
     app_state.profiles.active_id = profile_id
     _write_all(app_state)
     return True
@@ -344,12 +471,13 @@ def apply_profile(app_state: AppState, profile_id: str) -> bool:
 def _save_payload_from_live(app_state: AppState, profile_id: str) -> None:
     entries = copy.deepcopy(app_state.remapper.entries)
     macros = copy.deepcopy(app_state.macros.macros)
+    overlay = copy.deepcopy(app_state.overlay)
     ws = None
     selected = app_state.window_select.selected
     if selected is not None:
         ws = {"pid": selected.pid, "exe_name": selected.exe_name, "window_title": selected.window_title}
     with _payload_lock:
-        _payload_cache[profile_id] = {"entries": entries, "macros": macros, "window_select": ws}
+        _payload_cache[profile_id] = {"entries": entries, "macros": macros, "window_select": ws, "overlay": overlay}
 
 
 def save_profile(app_state: AppState, profile_id: str) -> bool:

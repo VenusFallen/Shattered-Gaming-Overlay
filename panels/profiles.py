@@ -21,9 +21,10 @@ def render(ctx: PanelContext) -> None:
     imgui.text(f"{fa.ICON_FA_FOLDER_OPEN}  Profiles")
     widgets.muted_text(
         theme,
-        "Save/load named per-game configs. Loading a profile always starts with "
-        "Remapper/Macros/Window Select disabled, except whatever you mark below "
-        "to survive the load.",
+        "Save/load named per-game configs -- Remapper, Macros, Window Select, and the Overlay "
+        "(crosshair, Stats HUD, status indicators). Loading a profile always starts with "
+        "Remapper/Macros/Window Select disabled, except whatever you mark below to survive the "
+        "load -- the Overlay always comes along as saved, since it's just a visual aid.",
     )
     imgui.spacing()
 
