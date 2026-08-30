@@ -361,31 +361,6 @@ def launch_installer_and_quit(installer_path: Path) -> None:
         # convention) survives that join intact.
         install_args.append(f'/LOG="{log_path}"')
 
-    # PyInstaller onefile's bootloader uses _MEIPASS2 internally to hand the
-    # extraction path from a parent bootloader stage to its own child
-    # process; if it's still set in this process's own environment when we
-    # spawn the elevated watcher below, everything downstream (watcher ->
-    # installer -> relaunched app, none of which resets the environment)
-    # inherits it too -- pointing the relaunched app at this process's own
-    # extraction folder, which normal teardown deletes as this process
-    # exits. Every prior fix (liveness-check accuracy, ShellExec, Defender
-    # exclusions incl. Block-At-First-Sight) left the relaunch crash
-    # unchanged, so this is the next concrete, cheap-to-rule-out candidate.
-    # Logged either way so a live test gives a real answer instead of more
-    # guessing.
-    stale_meipass2 = os.environ.pop("_MEIPASS2", None)
-    # logging isn't configured with any handler in this app (no
-    # basicConfig/FileHandler anywhere), so _log.info() here would be
-    # silently swallowed -- write a plain text file instead, guaranteed
-    # visible regardless of that.
-    try:
-        diag_dir = _log_dir()
-        diag_dir.mkdir(parents=True, exist_ok=True)
-        diag_path = diag_dir / f"update_relaunch_diag_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        diag_path.write_text(f"_MEIPASS2 before relaunch handoff: {stale_meipass2!r}\n")
-    except Exception:
-        pass
-
     ps_command = _build_relaunch_command(my_pid, installer_path, install_args)
     lp_parameters = _build_shell_execute_parameters(ps_command)
 

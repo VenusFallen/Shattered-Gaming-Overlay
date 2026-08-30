@@ -1,4 +1,4 @@
-VERSION = "1.2.17"
+VERSION = "1.3.0"
 
 # Shared with main.py (sets the OS window title) and titlebar.py (looks the
 # window up by this exact title via ctypes/FindWindowW as a fallback path),
