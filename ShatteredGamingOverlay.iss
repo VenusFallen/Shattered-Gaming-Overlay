@@ -9,13 +9,25 @@
 ; step either -- stats_poller.py runs with IsRing0Enabled = False, so LHM
 ; needs only its DLLs, shipped as plain data files via [Files] below.
 ;
-; Installer and app both run admin (PrivilegesRequired=admin below,
-; ShatteredGamingOverlay.spec's uac_admin=True), so the post-install [Run]
-; launch needs no ShellExec runas workaround -- same privilege level, plain
-; Exec/[Run] Filename= already runs at the right level. Admin is required
+; Both the installer and the app manifest as admin (PrivilegesRequired=admin
+; below, ShatteredGamingOverlay.spec's uac_admin=True). Admin is required
 ; because stats_poller.py's FPS tracking (PresentMon, a real-time ETW trace
 ; session) fails with "access denied" unless elevated; the whole app
 ; requests admin at launch rather than self-elevating just PresentMon.
+;
+; The post-install/relaunch [Run] entry and RelaunchAppAfterSilentUpdate()
+; both use shellexec/ShellExec, not a plain Exec -- an earlier version of
+; this file reasoned that plain Exec was fine since the installer is already
+; elevated, but R9Tools (same architecture: PyInstaller onefile + uac_admin
+; manifest + Inno Setup silent self-update) hit this exact problem first:
+; a bare CreateProcess-style launch (what Exec/[Run] without shellexec uses)
+; does not itself satisfy a requireAdministrator manifest regardless of the
+; caller's own privilege level -- only ShellExecute-based launches (Inno's
+; ShellExec) correctly negotiate the manifest and elevation together. Live
+; testing 2026-08-30 showed the relaunched process spawning and immediately
+; failing with a Python-DLL LoadLibrary error every single time, consistent
+; with the app coming up in a state that doesn't match what its own manifest
+; demands.
 ;
 ; No AppMutex set: main.py doesn't hold a named mutex for CloseApplications
 ; to target (that would be an application-logic change, out of scope here --
@@ -80,9 +92,10 @@ Name: desktopicon; Description: "Create a desktop shortcut"; GroupDescription: "
 
 [Run]
 ; Launch Shattered Gaming Overlay after install (optional, user can uncheck).
-; No shellexec needed -- installer and app both run admin (see header note).
+; shellexec is required -- see header note re: requireAdministrator manifests
+; and plain Exec/[Run] launches.
 Filename: "{app}\ShatteredGamingOverlay.exe"; Description: "Launch Shattered Gaming Overlay"; \
-    Flags: nowait postinstall skipifsilent
+    Flags: nowait postinstall skipifsilent shellexec
 
 [Code]
 // True if ShatteredGamingOverlay.exe is currently running (via tasklist).
@@ -150,7 +163,9 @@ begin
   for LaunchAttempt := 1 to 2 do
   begin
     Sleep(2000);
-    Exec(ExpandConstant('{app}\ShatteredGamingOverlay.exe'), '', '',
+    // ShellExec, not Exec -- see header note re: requireAdministrator
+    // manifests and plain Exec/[Run] launches.
+    ShellExec('', ExpandConstant('{app}\ShatteredGamingOverlay.exe'), '', '',
       SW_SHOWNORMAL, ewNoWait, ResultCode);
 
     SettleDelayMs := 1500;
