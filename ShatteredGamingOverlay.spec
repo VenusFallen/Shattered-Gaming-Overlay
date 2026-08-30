@@ -101,7 +101,15 @@ exe = EXE(
     a.datas,
     [],
     name='ShatteredGamingOverlay',
-    debug=False,
+    # TEMPORARY debug instrumentation (2026-08-30) -- debug=True turns on the
+    # bootloader's own verbose step-by-step tracing (DLL search, extraction,
+    # each load attempt) instead of just the generic failure MessageBox;
+    # needs console=True too so there's an actual console for it to print
+    # into. The crash shows a blocking error dialog, so the process (and its
+    # console) stays alive long enough to read/screenshot before it closes.
+    # Revert both to False once the post-update relaunch crash is
+    # root-caused.
+    debug=True,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
@@ -114,7 +122,7 @@ exe = EXE(
     # post-update "Failed to load Python DLL" bug directly. Revert to
     # runtime_tmpdir=None once that's root-caused.
     runtime_tmpdir=r'C:\Users\VenusFallen\SGO_debug_extract',
-    console=False,
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
