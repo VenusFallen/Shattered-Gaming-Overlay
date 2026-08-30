@@ -352,7 +352,14 @@ def launch_installer_and_quit(installer_path: Path) -> None:
 
     install_args = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
     if log_path is not None:
-        install_args.append(f"/LOG={log_path}")
+        # Start-Process -ArgumentList joins array elements onto the child's
+        # raw command line with a bare space, no re-quoting -- confirmed
+        # live: a space-containing element (this path always has one, from
+        # "Shattered Gaming Overlay") arrives at the installer split into
+        # several argv entries, so it silently drops the flag. Embedding our
+        # own quotes around the value (Inno Setup's own documented /LOG=
+        # convention) survives that join intact.
+        install_args.append(f'/LOG="{log_path}"')
 
     ps_command = _build_relaunch_command(my_pid, installer_path, install_args)
     lp_parameters = _build_shell_execute_parameters(ps_command)

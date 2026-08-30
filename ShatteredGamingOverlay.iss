@@ -93,18 +93,34 @@ var
   Output: TExecOutput;
   I: Integer;
   CombinedOutput: String;
+  MatchStr: String;
 begin
   Result := False;
   if not ExecAndCaptureOutput('tasklist.exe',
     '/FI "IMAGENAME eq ShatteredGamingOverlay.exe" /NH', '',
     SW_HIDE, ewWaitUntilTerminated, ResultCode, Output) then
+  begin
+    // Distinct from a genuine "no matching process" result below -- a live
+    // 2026-08-30 test showed this check reporting false negatives against a
+    // process independently confirmed still running, and the two failure
+    // modes need to be told apart to find out which one this actually is.
+    Log('IsAppProcessRunning: ExecAndCaptureOutput failed to launch tasklist.exe -- result unknown, not a confirmed absence.');
     Exit;
+  end;
 
   CombinedOutput := '';
   for I := 0 to GetArrayLength(Output.StdOut) - 1 do
     CombinedOutput := CombinedOutput + Output.StdOut[I] + #13#10;
 
   Result := Pos('SHATTEREDGAMINGOVERLAY.EXE', Uppercase(CombinedOutput)) > 0;
+
+  if Result then
+    MatchStr := 'yes'
+  else
+    MatchStr := 'no';
+  Log('IsAppProcessRunning: tasklist.exe ResultCode=' + IntToStr(ResultCode) +
+    ' StdOutLines=' + IntToStr(GetArrayLength(Output.StdOut)) +
+    ' match=' + MatchStr + ' raw=[' + CombinedOutput + ']');
 end;
 
 // The "Launch Shattered Gaming Overlay" [Run] entry uses skipifsilent, so a

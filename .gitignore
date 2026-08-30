@@ -21,3 +21,6 @@ venv/
 # Hello ImGui's per-window-title runtime geometry/layout cache (imgui.ini
 # equivalent) -- regenerated on launch, not source.
 *.ini
+
+# Agent behavior rules -- local to this machine, not shared project config.
+agent-rules.md
