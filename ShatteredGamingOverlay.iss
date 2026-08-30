@@ -96,8 +96,14 @@ var
   MatchStr: String;
 begin
   Result := False;
+  // /FO CSV, not the default fixed-width table -- tasklist's table format
+  // truncates the Image Name column (the classic ~25-char limit), and
+  // "ShatteredGamingOverlay.exe" (27 chars) was getting clipped to
+  // "ShatteredGamingOverlay.ex", so the match below never fired even when
+  // the process was genuinely running. Confirmed live 2026-08-30 via the
+  // raw-output logging below.
   if not ExecAndCaptureOutput('tasklist.exe',
-    '/FI "IMAGENAME eq ShatteredGamingOverlay.exe" /NH', '',
+    '/FI "IMAGENAME eq ShatteredGamingOverlay.exe" /FO CSV /NH', '',
     SW_HIDE, ewWaitUntilTerminated, ResultCode, Output) then
   begin
     // Distinct from a genuine "no matching process" result below -- a live
