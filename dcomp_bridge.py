@@ -10,10 +10,6 @@ rather than any game-swap-chain hook.
 Only the handful of methods the HUD overlay uses are wrapped here. Vtable
 offsets are fixed by the Windows SDK ABI.
 
-Adapted from R9Tools' dcomp_bridge.py (same author, same technique) -- this
-file is generic Win32 COM plumbing with nothing game- or project-specific
-in it.
-
 IDCompositionDevice vtable (IUnknown 0-2, own methods from 3):
     Commit                  = 3
     WaitForCommitCompletion = 4

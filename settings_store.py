@@ -1,21 +1,14 @@
-"""settings_store.py -- save/load global app preferences to a single JSON
-file on disk (`settings.json` under `%LOCALAPPDATA%\\Shattered Gaming
-Overlay\\` -- see SETTINGS_FILE's own comment for why; same location as
-profiles.py's `profiles.json` and updater.py's install logs, gitignored
-when running from source).
+"""settings_store.py -- save/load global app preferences to settings.json
+under %LOCALAPPDATA% (see SETTINGS_FILE's own comment for why).
 
-Deliberately separate from profiles.py: `AppState.settings` is app-wide
-preference (theme, reduce motion, the Color Cycle config, update-check
-opt-in, and the titlebar close-button behavior) that must stay identical no
-matter which profile is active or how many self-updates have run -- it is
-never part of a `ProfileDef`'s saved payload, and profiles.py never touches
-this file. See app_state.SettingsState's own field comments for why each
-field below is or isn't included here.
+Deliberately separate from profiles.py: `AppState.settings` (theme, reduce
+motion, Color Cycle config, update-check opt-in, titlebar close behavior)
+must stay identical regardless of active profile, so it's never part of a
+`ProfileDef`'s payload and profiles.py never touches this file.
 
 Same disk-I/O shape as profiles.py (`_read_disk`/`_write_disk`: best-effort,
-atomic tmp-file replace, never raises into the caller) -- not reused
-directly since the two files serialize entirely different data, but kept
-identical in spirit on purpose.
+atomic tmp-file replace, never raises into the caller) -- not shared code
+since the two files serialize different data, but kept identical in spirit.
 """
 
 from __future__ import annotations
@@ -29,10 +22,8 @@ from typing import Tuple
 from app_state import AppState
 
 # NOT Path(__file__).resolve().parent -- see profiles.py's PROFILES_FILE
-# comment for the full explanation: that resolves to PyInstaller onefile's
-# ephemeral per-launch extraction temp dir in the actual frozen build,
-# which never persists across launches. Same %LOCALAPPDATA% location
-# updater.py's _log_dir() and profiles.py's PROFILES_FILE already use.
+# comment. Same %LOCALAPPDATA% location updater.py's _log_dir() and
+# profiles.py's PROFILES_FILE already use.
 SETTINGS_FILE = Path(os.getenv("LOCALAPPDATA") or tempfile.gettempdir()) / "Shattered Gaming Overlay" / "settings.json"
 
 RGBA = Tuple[float, float, float, float]
@@ -71,13 +62,9 @@ def _color_from_json(raw, fallback: RGBA) -> RGBA:
 
 
 def load(app_state: AppState) -> None:
-    """Call once at startup (see main.py), right after `new_app_state()`.
-
-    Only ever overwrites the specific fields `save()` below writes -- every
-    other `SettingsState` field (the runtime update-flow fields, the Color
-    Cycle animation clock) stays whatever `new_app_state()` defaulted it to,
-    same "load only what we saved" contract as profiles.py's `load_all()`.
-    """
+    """Call once at startup, right after `new_app_state()`. Only overwrites
+    the specific fields `save()` writes -- every other `SettingsState` field
+    stays whatever `new_app_state()` defaulted it to."""
     data = _read_disk()
     if not data:
         return
@@ -103,15 +90,9 @@ def load(app_state: AppState) -> None:
 
 def save(app_state: AppState) -> None:
     """Write the persist-worthy subset of `SettingsState` to disk.
-
-    Deliberately narrow -- `update_status`/`update_latest_version`/
-    `update_download_pct`/`update_error_message`/`last_checked_display`/
-    `auto_update_prompt_pending` are per-session runtime state written by
-    `updater.update_manager`, never a user preference, and
-    `cycle_elapsed_sec` is an animation clock that should always restart at
-    0 on launch, not resume mid-cycle after a relaunch. None of those belong
-    in a preferences file.
-    """
+    Deliberately excludes the update-flow runtime fields (per-session state
+    owned by `updater.update_manager`) and `cycle_elapsed_sec` (an animation
+    clock that should always restart at 0, not resume after a relaunch)."""
     settings = app_state.settings
     data = {
         "theme_name": settings.theme_name,

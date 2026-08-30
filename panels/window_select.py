@@ -1,12 +1,10 @@
 """panels/window_select.py -- Target Window: pick a specific running process,
-or leave global. Purely UI rendering over app_state.WindowSelectState; the
-actual psutil/win32 process enumeration and OS-focus tracking live in the
-root-level window_select.py (the engine-side module -- same split as
-input_hooks.py/input_inject.py vs their panel files), wired in below via a
-single refresh_if_stale() call.
+or leave global. Purely UI rendering over app_state.WindowSelectState;
+process enumeration and OS-focus tracking live in the root-level
+window_select.py, wired in via refresh_if_stale().
 
-Folded into the Settings panel as its own card (`render_section`) rather than
-a standalone top-level tab -- see shell.py's nav order.
+Folded into the Settings panel as a card (`render_section`), not a
+standalone tab.
 """
 
 from __future__ import annotations

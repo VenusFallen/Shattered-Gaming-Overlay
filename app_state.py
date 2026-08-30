@@ -1,23 +1,9 @@
 """app_state.py -- in-memory state shape for the Companion window.
 
-No backend engine exists yet (remapper.py / macro_engine.py /
-profiles.py / window_select.py are future work), so every panel below owns
-its own local state for now. The shapes here are deliberately close to what
-those future engine modules will eventually need, so wiring a real engine in
-later is a small "swap the in-memory list for a call into profiles.py" change,
-not a redesign:
-
-  - RemapperState.entries          ~= what remapper.py will load/save per profile
-  - MacrosState.macros             ~= what macro_engine.py will record/play back
-  - ProfilesState.profiles         ~= what profiles.py will persist to disk
-  - WindowSelectState              ~= what window_select.py will enumerate/track
-  - OverlayState                   ~= what the future HUD overlay will read to
-                                      decide what to render (future UI work,
-                                      not engine work)
-
-Nothing here talks to input_hooks.py/input_inject.py directly except via
-key_capture.py's bind-capture widget helper -- these dataclasses are pure
-data, no I/O.
+Pure data, no I/O. Panels read/write these dataclasses directly; the engine
+modules (remapper.py, macro_engine.py, profiles.py, window_select.py,
+stats_poller.py, settings_store.py) own the actual hardware/disk/network
+side and sync into or out of this shape once per frame.
 """
 
 from __future__ import annotations
@@ -154,9 +140,8 @@ class ProfileDef:
     id: str
     name: str
     protected: bool = False  # the "Default" profile -- cannot be deleted/renamed
-    # Per-module "survive profile load" flags -- mirrors R9Tools' pattern of
-    # deciding this per-module rather than assuming; profiles.py is the
-    # future source of truth for these, this is just the editable mirror.
+    # Per-module "survive profile load" flags. profiles.py owns the real
+    # payload; this is the editable mirror.
     persist_remapper: bool = False
     persist_macros: bool = False
     persist_window_select: bool = False
@@ -198,8 +183,7 @@ def default_profiles_state() -> ProfilesState:
 
 @dataclass
 class ProcessInfo:
-    """Mirrors what window_select.py's future psutil/win32gui enumeration
-    will hand back: enough to display and to target a process."""
+    """Enough to display and target a running process."""
 
     pid: int
     exe_name: str
@@ -212,17 +196,14 @@ class WindowSelectState:
     selected: Optional[ProcessInfo] = None
     available: List[ProcessInfo] = field(default_factory=list)
     filter_text: str = ""
-    # Display-only: whether `selected` currently holds real OS foreground
-    # focus. No engine exists yet to compute this live; this field exists so
-    # the panel's "inert while unfocused" messaging has somewhere real to
-    # read from once window_select.py is wired in.
+    # Whether `selected` currently holds real OS foreground focus -- kept
+    # live by window_select.py.
     selected_has_focus: bool = False
 
 
 # ---------------------------------------------------------------------------
-# Overlay (Companion-side config for the future HUD overlay -- rendering
-# itself is separate future work; this is only the toggle/style
-# state the HUD would read)
+# Overlay -- config the HUD overlay (hud_overlay.py) reads each frame to
+# decide what to render.
 # ---------------------------------------------------------------------------
 
 
@@ -236,10 +217,8 @@ class StatsHudState:
     corner: str = "Top Right"
     scale: float = 1.0
     color: Tuple[float, float, float, float] = (0.93, 0.94, 0.96, 1.0)
-    # Background transparency for the Stats box's rounded-rect card --
-    # independent of `color` (which is the text color only). 0 = fully
-    # see-through, 1 = fully opaque. See panels/overlay.py's stats card for
-    # the slider and hud_overlay.py's _draw_stats_box for the consumer.
+    # Card background transparency, independent of `color` (text only).
+    # 0 = see-through, 1 = opaque.
     bg_alpha: float = 0.55
 
 
@@ -249,27 +228,19 @@ class CrosshairState:
     style: str = "Cross"
     size: float = 12.0
     thickness: float = 2.0
-    # Cross/T-Shape: distance from center to where each arm starts -- 0
-    # means the arms touch at the center, forming an unbroken plus/T instead
-    # of the old fixed size*0.25 gap. Circle + Dot: an independent offset
-    # added to the ring's radius (on top of `size`), so the ring can be
-    # pushed closer to or further from the center dot without changing the
-    # dot's own size (still size*0.15, see hud_overlay.py) or the ring's
-    # thickness (`thickness` above) -- one dedicated control for "how far
-    # apart", separate from the two controls for "how big". Unused by Dot
-    # and plain Circle.
+    # Cross/T-Shape: gap between center and each arm (0 = arms touch,
+    # forming an unbroken plus/T). Circle + Dot: offset added to the ring's
+    # radius, independent of the dot's size or the ring's thickness. Unused
+    # by Dot and plain Circle.
     gap: float = 3.0
     color: Tuple[float, float, float, float] = (0.24, 0.86, 0.52, 1.0)
 
 
 @dataclass
 class StatusIndicatorsState:
-    """Two themed count badges -- Remapper and Macros -- each showing how
-    many of that module's entries are currently *enabled* (not the total
-    configured count; a status indicator should reflect what's live right
-    now). Replaces the earlier show_remap_status/show_macro_status/
-    show_profile_name 3-toggle model, which didn't fit a count-based,
-    two-badge design -- no profile-name indicator in this design."""
+    """Two themed count badges (Remapper, Macros), each showing how many of
+    that module's entries are currently *enabled* -- not the total
+    configured count."""
 
     enabled: bool = False
     show_remap_badge: bool = True
@@ -291,12 +262,8 @@ class OverlayState:
 
 
 class UpdateStatus(Enum):
-    """Mirrors R9Tools' informal `_appState` string states (see its
-    panels/settings.py), formalized as an enum here per updater.py's module
-    docstring. Read/written every frame by updater.UpdateManager.sync_to()
-    -- see main.py's `_show_gui` for the call site (same spot
-    remapper_engine.update_snapshot()/macro_engine's own equivalents are
-    called) -- never set directly from a background thread."""
+    """Synced from updater.UpdateManager.sync_to() each frame -- never set
+    directly from a background thread."""
 
     IDLE = "idle"
     CHECKING = "checking"
@@ -312,45 +279,25 @@ class UpdateStatus(Enum):
 class SettingsState:
     theme_name: str = "dark"
     reduce_motion: bool = False
-    # Color Cycle theme config (see theme.py's COLOR_CYCLE /
-    # resolve_color_cycle_theme) -- only meaningful while theme_name ==
-    # "color_cycle"; harmless dead data otherwise. Defaults reuse Dark's own
-    # accent and Violet's own accent (both already contrast-validated
-    # individually in theme.py) rather than arbitrary new hues.
+    # Color Cycle config -- only meaningful while theme_name == "color_cycle".
+    # See theme.py's resolve_color_cycle_theme().
     cycle_color_a: Tuple[float, float, float, float] = field(default_factory=lambda: hex_rgba("#3D6FD1"))
     cycle_color_b: Tuple[float, float, float, float] = field(default_factory=lambda: hex_rgba("#7C5CE0"))
-    # Full back-and-forth cycle length in seconds -- a slow ambient drift,
-    # never fast/strobing (see panels/settings.py's slider bounds, which
-    # keep even the "fastest" end of the range in this same slow territory).
-    cycle_period_sec: float = 20.0
-    # Seconds fed into theme.color_cycle_phase() -- advanced by shell.py
-    # each frame using imgui's delta_time, but ONLY while reduce_motion is
-    # off (see shell.py's render_frame). Reduce Motion freezes the
-    # animation by simply not advancing this, rather than the resolver
-    # needing to know about reduce_motion itself.
+    cycle_period_sec: float = 20.0  # full back-and-forth cycle, seconds
+    # Advanced each frame by shell.py, frozen while reduce_motion is on.
     cycle_elapsed_sec: float = 0.0
-    # Updates -- see updater.py (the self-updater, GitHub Releases
-    # based) and panels/settings.py's _render_updates. `update_status` /
-    # `update_latest_version` / `update_download_pct` / `update_error_message`
-    # / `last_checked_display` are all written by updater.update_manager's
-    # sync_to() call in main.py, never edited directly by any panel.
     check_for_updates_on_launch: bool = True
-    # Titlebar close-button behavior: True (default) hides to tray via
-    # titlebar.py's _close(), same as R9Tools' convention; False skips the
-    # tray entirely and exits the app outright. See titlebar.py's _close()
-    # docstring for the actual branch.
+    # False: X button exits outright instead of hiding to tray. See
+    # titlebar.py's _close().
     close_minimizes_to_tray: bool = True
     last_checked_display: str = "Never checked"
     update_status: UpdateStatus = UpdateStatus.IDLE
     update_latest_version: str = ""
     update_download_pct: int = 0
     update_error_message: str = ""
-    # True for exactly one automatic check-on-launch result per session, from
-    # the moment a newer release is found until the user picks "Update Now"
-    # or "Later" in the prompt panels/settings.py's render_auto_update_prompt
-    # draws (see shell.py's call site) -- "Later" only clears this flag, it
-    # never touches check_for_updates_on_launch (per R9Tools' README-
-    # documented behavior: skip for the session, not disable the setting).
+    # True for one automatic check-on-launch result per session, until the
+    # user picks Update Now/Later. "Later" only clears this, never touches
+    # check_for_updates_on_launch.
     auto_update_prompt_pending: bool = False
 
 
@@ -378,9 +325,13 @@ class AppState:
     overlay: OverlayState = field(default_factory=OverlayState)
     settings: SettingsState = field(default_factory=SettingsState)
     active_panel: str = "dashboard"
+    # Runtime-only, never persisted. Why PresentMon's FPS tracking last
+    # failed, if it did -- synced from stats_poller each frame, surfaced by
+    # panels/overlay.py's Stats HUD card.
+    stats_fps_error: Optional[str] = None
 
 
 def new_app_state() -> AppState:
-    """Build a fresh, empty AppState (nothing here is persisted -- there's
-    no profiles.py yet to load from, so a new run always starts blank)."""
+    """Build a blank AppState. main.py loads settings_store/profiles data
+    into it right after construction."""
     return AppState()

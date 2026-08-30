@@ -1,91 +1,42 @@
 """stats_poller.py -- background hardware-stats + FPS polling, feeding the
-future Stats HUD (CPU/GPU usage & temp, VRAM, RAM, FPS).
+Stats HUD (CPU/GPU usage & temp, VRAM, RAM, FPS).
 
-Ported from R9Tools' stats_poller.py (this project's predecessor, at
-D:\\Projects\\Python\\Testing\\R9Tools\\stats_poller.py), which already solved
-this exact problem. The LibreHardwareMonitor bootstrap quirks, the AMD Ryzen
-0.0-temp sentinel filter, the PresentMon subprocess/CTRL_BREAK_EVENT teardown
-dance, and the sensor-harvesting priority rules below are all carried over
-from there -- adapted, not re-derived. See "What's different from R9Tools"
-below for the actual deltas.
+Hard-rule compliance:
+- LibreHardwareMonitorLib (bundled unmodified in lib/, MPL 2.0) is opened
+  with `Computer.IsRing0Enabled = False`. LHM can install a kernel driver
+  for raw MSR/PCI sensor access, but only if Ring0 is enabled -- leaving it
+  False trades away a handful of sensors (some CPU temps) for staying
+  inside the project's absolute no-kernel-driver rule. Do not flip this.
+- PresentMon (bundled unmodified in presentmon/, MIT) reads frame-present
+  timing passively via Windows' ETW tracing. No DLL injection, no writes
+  into the target game process.
+- This module never touches input (no SendInput, no hooks) -- pure
+  sensor/telemetry polling, no target-process memory access.
 
-Hard-rule compliance
------------------------------------------------------------
-- LibreHardwareMonitorLib (bundled unmodified in lib/, MPL 2.0 --
-  lib/LICENSE-LibreHardwareMonitor.txt) is opened with
-  `Computer.IsRing0Enabled = False`. This is the setting that keeps this
-  module from ever installing LHM's bundled WinRing0 kernel driver -- LHM
-  *can* install a kernel driver for raw MSR/PCI sensor access, but only if
-  Ring0 is left enabled. Leaving it False trades away a handful of sensors
-  (some CPU temps on some boards) for staying inside the project's absolute
-  "no kernel-mode driver" rule. Do not flip this to True.
-- PresentMon (bundled unmodified in presentmon/, MIT --
-  presentmon/LICENSE-PresentMon.txt) reads frame-present timing passively via
-  Windows' own ETW tracing (`--process_id <pid>`). It performs no DLL
-  injection and no writes into the target game process -- it's a read-only
-  external observer, same as the input hooks are.
-- No target-process memory is ever read or written by this module, LHM, or
-  PresentMon. This module never touches input (no SendInput, no hooks) at
-  all -- it is pure sensor/telemetry polling.
+FPS tracking reuses `window_select.foreground_pid()` and always follows the
+real OS foreground window, deliberately NOT gated by the window-select
+process filter (that filter only gates Remapper/Macro engine
+matching/injection, never this read-only observer).
 
-What's different from R9Tools
-------------------------------
-- Snapshot shape: R9Tools' StatsPoller().latest was a bare dict with a
-  bespoke key set (cpu_usage, gpu_usage, gpu_vram_used, ...) fed to a
-  registered callback. Here it's a frozen `StatsSnapshot` dataclass
-  (`cpu_pct`, `gpu_pct`, `gpu_vram_used_gb`, ... -- exact field names on the
-  class below), handed out via `get_snapshot()`, matching this project's
-  lock-guarded-snapshot pull pattern (see hud_overlay.py's
-  `update_crosshair`/render-thread split, macro_engine.py's
-  `update_snapshot`).
-- No `settings` dict dependency. R9Tools drove `update_rate_hz` and
-  `show_fps` off a shared settings dict that doesn't exist on this side of
-  the port (this module is explicitly poller-only -- a HUD-rendering
-  follow-up will design how a caller wires real settings in).
-  `StatsPoller.__init__` takes plain constructor args instead
-  (`poll_interval_sec`, `track_fps`), with `set_track_fps()` for runtime
-  toggling once a settings toggle exists to drive it.
-- Foreground-window lookup for FPS targeting reuses
-  `window_select.foreground_pid()` instead of R9Tools' own local
-  win32gui/win32process calls -- this project already has a correct, tested
-  implementation of that, no need for a second one. Like R9Tools, FPS
-  tracking always follows the real OS foreground window and is deliberately
-  NOT gated by the window-select process filter (that filter
-  only gates Remapper/Macro engine matching/injection, never this read-only
-  stats/FPS observer -- same reasoning as the overlay-visibility
-  carve-out for the HUD).
-- This module is not wired into main.py/hud_overlay.py/app_state.py yet --
-  intentionally. That will happen in a follow-up HUD-rendering pass, designed
-  together with how the renderer actually wants to consume `get_snapshot()`.
-
-Threading
----------
 `StatsPoller.start()`/`.stop()` run/tear down a single background daemon
-thread (`_poll_loop`), the same start/stop shape as `HookManager`/
-`hud_overlay`'s render thread. Each poll tick builds a brand-new
-`StatsSnapshot` and publishes it under `self._lock`; callers pull the latest
-one via `get_snapshot()` (thread-safe, cheap, never blocks on I/O). Snapshots
-are never mutated in place -- each tick replaces the whole object, so a
-caller holding a reference to one `StatsSnapshot` never sees it change out
-from under it.
+thread. Each poll tick builds a brand-new `StatsSnapshot` and publishes it
+under `self._lock`; callers pull the latest via `get_snapshot()`
+(thread-safe, cheap, never blocks on I/O). Snapshots are never mutated in
+place -- each tick replaces the whole object.
 
-Graceful degradation
----------------------
-If `pythonnet` isn't installed, or the bundled LibreHardwareMonitorLib.dll
-can't be found/loaded, `lhm_available()` returns False and `start()` is a
-no-op that immediately publishes a snapshot with `available=False` and
-`error` set to a human-readable reason -- this module never raises out of
-`start()`/`get_snapshot()` over a missing dependency. Same idea for
-PresentMon: if presentmon/PresentMon.exe is missing or fails to launch,
-`fps` stays None and `fps_error` explains why, without affecting the
-CPU/GPU/RAM side of the snapshot at all -- these are two independent
-subsystems and either can fail without disabling the other.
+If `pythonnet` isn't installed or LibreHardwareMonitorLib.dll can't be
+loaded, `lhm_available()` returns False and `start()` is a no-op that
+publishes `available=False` with a human-readable `error` -- never raises.
+Same for PresentMon: if missing or fails to launch, `fps` stays None and
+`fps_error` explains why, without affecting the CPU/GPU/RAM side of the
+snapshot -- the two subsystems fail independently.
 """
 
 from __future__ import annotations
 
 import logging
 import signal
+import statistics
 import subprocess
 import sys
 import threading
@@ -107,7 +58,16 @@ _bootstrap_error: Optional[str] = None
 # PresentMon / FPS tracking
 # ---------------------------------------------------------------------------
 _FPS_ROLLING_WINDOW = 30    # frames averaged for the smoothed FPS value
-_FPS_STALE_SEC = 2.0        # no fresh sample in this long -> report no FPS
+# PresentMon's stdout isn't a real console when piped, so its C runtime
+# switches to block-buffered output -- samples arrive in lumpy bursts (worst
+# observed gap ~6s on a steady 60fps game) rather than a steady stream. 10s
+# gives margin above the worst ordinary gap without masking a genuine
+# failure (crash, game exit) for long.
+_FPS_STALE_SEC = 10.0       # no fresh sample in this long -> report no FPS
+# Right after start()/retarget, a single slow sample (a real dropped frame)
+# can dominate a tiny window's median even though it can't touch a full
+# 30-sample one. Hold at "no data" until enough samples exist.
+_FPS_MIN_SAMPLES = 10
 _PID_DEBOUNCE_SEC = 0.75    # foreground pid must be stable this long before retargeting
 
 _pm_missing_warned = False       # log "binary not found" only once per session
@@ -115,10 +75,8 @@ _pm_launch_failed_warned = False  # log "failed to launch" only once per session
 
 
 def _presentmon_path() -> Path:
-    """Resolve presentmon/PresentMon.exe using the same dev-mode vs. frozen
-    (sys._MEIPASS) resolution pattern `_bootstrap()` uses for lib/, and the
-    same `getattr(sys, "frozen", False)` check updater.py already uses
-    elsewhere in this project."""
+    """Resolve presentmon/PresentMon.exe, same dev-mode vs. frozen
+    (sys._MEIPASS) resolution pattern `_bootstrap()` uses for lib/."""
     try:
         if getattr(sys, "frozen", False):
             persistent = Path(sys.executable).parent / "presentmon"
@@ -159,7 +117,16 @@ class _FpsTracker:
     Reads its live stdout CSV stream on a background thread, keeps a rolling
     window of msBetweenPresents samples, and exposes a smoothed FPS value.
     Fully self-contained: caller just calls start(pid, exe)/stop()/get_fps().
-    Ported near-verbatim from R9Tools' `_FpsTracker`.
+
+    Two corrections over a naive "average the raw samples" approach:
+      - The first sample after every start()/restart is discarded -- a known
+        ETW artifact (PresentMon's timer for that row measures from
+        trace-session-start to first observed present, not between two real
+        frames), frequently an outlier with no relation to real frame pacing.
+      - get_fps() uses the MEDIAN of the rolling window, not the mean. Real
+        dropped-frame spikes (2x/3x/7x the steady interval) are common
+        enough that even one or two inside a 30-sample mean drag the
+        reported number down by more than half; a median shrugs them off.
     """
 
     def __init__(self) -> None:
@@ -168,6 +135,7 @@ class _FpsTracker:
         self._reader_thread: Optional[threading.Thread] = None
         self._samples: deque = deque(maxlen=_FPS_ROLLING_WINDOW)
         self._last_sample_ts = 0.0
+        self._skip_next_sample = True
         self.last_error: Optional[str] = None
 
     def start(self, pid: int, exe_path: Path) -> None:
@@ -197,6 +165,7 @@ class _FpsTracker:
         with self._lock:
             self._samples.clear()
             self._last_sample_ts = 0.0
+            self._skip_next_sample = True
         self._reader_thread = threading.Thread(
             target=self._read_loop, daemon=True, name="SGO-PresentMonReader")
         self._reader_thread.start()
@@ -234,14 +203,14 @@ class _FpsTracker:
 
     def get_fps(self) -> Optional[float]:
         with self._lock:
-            if not self._samples:
+            if len(self._samples) < _FPS_MIN_SAMPLES:
                 return None
             if time.monotonic() - self._last_sample_ts > _FPS_STALE_SEC:
                 return None
-            avg_ms = sum(self._samples) / len(self._samples)
-        if avg_ms <= 0:
+            median_ms = statistics.median(self._samples)  # see class docstring
+        if median_ms <= 0:
             return None
-        return 1000.0 / avg_ms
+        return 1000.0 / median_ms
 
     def _read_loop(self) -> None:
         proc = self._proc
@@ -272,6 +241,13 @@ class _FpsTracker:
                 if ms <= 0:
                     continue
                 with self._lock:
+                    # See class docstring -- the first row of a fresh
+                    # session measures from session-start to first present,
+                    # not between two real frames, and is discarded rather
+                    # than treated as a real sample.
+                    if self._skip_next_sample:
+                        self._skip_next_sample = False
+                        continue
                     self._samples.append(ms)
                     self._last_sample_ts = time.monotonic()
         except Exception:

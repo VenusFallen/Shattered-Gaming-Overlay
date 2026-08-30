@@ -1,45 +1,33 @@
 """macro_engine.py -- executes `AppState.macros.macros` (`MacroDef`) entries:
 Once/Hold/Toggle trigger modes, editable delay steps, per-macro enable, and
-real humanize jitter on Delay-step timing. Pure user-mode: playback is only
-ever `input_inject.send_key` / `send_mouse_button` / `send_scroll` calls
-(discrete actions -- no continuous mouse-movement synthesis; that's a hard
-scope boundary for this project).
+real humanize jitter on Delay-step timing. Playback is only ever
+`input_inject.send_key` / `send_mouse_button` / `send_scroll` calls --
+discrete actions, no continuous mouse-movement synthesis (hard scope
+boundary for this project).
 
-Trigger source: remapper.py's effective event stream, not raw hooks
----------------------------------------------------------------------
-This module installs no hook of its own. It subscribes to
-`remapper.remapper_engine.add_effective_listener(...)` (wired in main.py)
-and matches macro triggers against the *post-remap* identity stream that
-publishes -- see remapper.py's module docstring for why. This is also how
-this module inherits the window-focus gate for free: remapper.py stops
-publishing entirely while a targeted process is unfocused, so macros
-naturally go inert alongside the Remapper without this module needing its
-own separate window_select.py lookup.
+Installs no hook of its own. It subscribes to
+`remapper.remapper_engine.add_effective_listener(...)` and matches triggers
+against the post-remap identity stream, so a remapped key correctly arms a
+macro bound to its destination. This also gives macros the window-focus gate
+for free: remapper.py stops publishing entirely while a targeted process is
+unfocused, so macros go inert alongside the remapper with no separate
+window_select.py lookup needed here.
 
-Threading
----------
-`handle_effective_event()` runs on the input-hook's own background thread
-(via remapper.py) and must stay fast/non-blocking (per input_hooks.py's
-hook-responsiveness-timeout warning) -- it only ever does a dict/list lookup
-and starts/signals a background thread, never sleeps or blocks itself.
-Each active macro trigger session (a Hold being held, a Toggle being on, an
-Once firing) runs its actual step playback -- including all Delay-step
-sleeping -- on its own dedicated background thread, so a macro's delays can
-never block hook processing.
+`handle_effective_event()` runs on the hook's background thread and must
+stay fast/non-blocking -- it only does a dict/list lookup and starts/signals
+a background thread. Each active trigger session (Hold held, Toggle on, Once
+firing) runs its own step playback, including all Delay sleeping, on its own
+dedicated thread, so delays never block hook processing.
 
 `update_snapshot(macros_state)` is called once per Companion-window frame
-from main.py (same lock-guarded-snapshot pattern hud_overlay.py established
-for the crosshair) and copies MacroDef/MacroStep's plain-data fields into
-immutable snapshot dataclasses -- the live, UI-mutable MacroDef/MacroStep
-instances themselves are never read from a background thread.
+and copies MacroDef/MacroStep's plain-data fields into immutable snapshot
+dataclasses -- the live, UI-mutable instances are never read from a
+background thread.
 
-Humanize jitter
-----------------
 The one documented behavioral detection vector for SendInput macros is
-inhumanly-regular timing -- add jitter to macro playback delays.
-`MacroDef.humanize_jitter_pct` is applied as real random
-variance (uniform(1 - pct, 1 + pct)) to every Delay step's sleep duration,
-every playback, not just a cosmetic display value.
+inhumanly-regular timing. `MacroDef.humanize_jitter_pct` is applied as real
+random variance (uniform(1 - pct, 1 + pct)) to every Delay step's sleep
+duration on every playback, not just a cosmetic display value.
 """
 
 from __future__ import annotations
@@ -71,18 +59,14 @@ _MOUSE_BUTTON_BY_LABEL = {
     "X2": MouseButton.X2,
 }
 
-# Small fixed hold duration for a "tap"/"click" step (down then up) so the
-# receiving app/game registers a real press rather than a same-instant
-# down+up some input readers coalesce away. Intentionally NOT humanized --
-# the jitter requirement is scoped to Delay-step timing specifically; this
-# is a fixed physical-plausibility floor, not a
-# recorded/played-back delay the user configured.
+# Fixed hold duration for a tap/click step so the receiving app registers a
+# real press rather than a same-instant down+up some input readers coalesce
+# away. Intentionally NOT humanized -- jitter is scoped to Delay steps only.
 _TAP_HOLD_SEC = 0.03
 _CLICK_HOLD_SEC = 0.04
 
-# How often a Hold/Toggle loop with no Delay steps at all yields to the OS
-# between iterations, so it can't spin the CPU at 100% -- mirrors R9Tools'
-# same `time.sleep(0.001)` between playback iterations.
+# Yield between Hold/Toggle iterations with no Delay steps, so the loop
+# can't spin the CPU at 100%.
 _LOOP_YIELD_SEC = 0.001
 
 
@@ -224,7 +208,7 @@ class MacroEngine:
                 rt.cancel_event.clear()
                 self._ensure_thread(rt, macro.id, self._toggle_loop)
 
-        else:  # Once -- fires on release, same precedent as R9Tools
+        else:  # Once -- fires on release
             if is_up:
                 threading.Thread(
                     target=self._once_run, args=(macro.id,), daemon=True, name=f"SGO-Macro-{macro.id}-once"
@@ -351,11 +335,7 @@ class MacroEngine:
         return max(0.0, ms) / 1000.0
 
 
-# ---------------------------------------------------------------------------
 # Process-wide singleton -- main.py starts/stops this alongside the
-# Companion window's own lifecycle, and wires it to remapper_engine's
-# effective-event stream (hud_overlay/capture_service/remapper_engine
-# pattern).
-# ---------------------------------------------------------------------------
-
+# Companion window's lifecycle and wires it to remapper_engine's
+# effective-event stream.
 macro_engine = MacroEngine()

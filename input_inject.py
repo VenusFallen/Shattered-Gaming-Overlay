@@ -1,28 +1,15 @@
-"""
-input_inject.py -- pure user-mode input injection for Shattered Gaming Overlay.
+"""input_inject.py -- pure user-mode input injection via the Win32
+`SendInput` API. This is the only way this project synthesizes input -- no
+driver, no ViGEm/virtual-controller HID emulation, no game-process memory
+writes.
 
-Wraps the Win32 `SendInput` API via `ctypes`. This is the ONLY way this
-project synthesizes input -- no driver, no ViGEm/virtual-controller HID
-emulation, no game-process memory writes. `SendInput` is the same technique
-AutoHotkey uses and is not a known BattlEye/EAC ban vector for software
-macros.
+Every injected event is tagged with `INJECTED_MARKER` in `dwExtraInfo`;
+`input_hooks.py` reads it back out so consumers can tell their own injected
+input apart from real physical input or another tool's injection.
 
-Design notes
-------------
-- Every event this module injects is tagged with `INJECTED_MARKER` in the
-  Win32 `dwExtraInfo` field. `input_hooks.py` reads that field back out of
-  the low-level hook struct so callers (the future remapper/macro engine)
-  can tell "input I just injected" apart from "input injected by something
-  else" (e.g. the Windows On-Screen Keyboard or another accessibility
-  tool) apart from "real physical input". Blanket-ignoring all injected
-  input in the hook would break legitimate accessibility input sources;
-  this marker lets the remapper avoid *only* its own feedback loop.
-- No sleeps, no delay/jitter logic lives here. Humanized timing between
-  injected events is a macro_engine.py concern -- this module only ever
-  fires a single instantaneous SendInput call.
-- Kept free of any dependency on input_hooks.py so it can be imported and
-  unit-tested completely standalone (e.g. in CI on a non-interactive
-  session) without a live hook installed.
+No sleeps or jitter logic here -- humanized delay timing is macro_engine.py's
+concern; this module only ever fires a single instantaneous SendInput call.
+Has no dependency on input_hooks.py, so it stays importable/testable standalone.
 """
 
 from __future__ import annotations
@@ -187,13 +174,8 @@ def _send(*inputs: INPUT) -> int:
 
 def send_key(vk_code: int, key_up: bool = False) -> None:
     """Synthesize a single key down (default) or key up event for `vk_code`.
-
-    Sets both the virtual-key code and the corresponding hardware scan
-    code (via MapVirtualKeyW) since some games/anti-cheat and DirectInput
-    -based apps key off the scan code rather than the vk. Automatically
-    sets KEYEVENTF_EXTENDEDKEY for keys that need it (arrows, ins/del,
-    right ctrl/alt, etc).
-    """
+    Sets both the vk and its scan code (some DirectInput-based apps key off
+    scan code, not vk) and auto-sets KEYEVENTF_EXTENDEDKEY where needed."""
     scan = user32.MapVirtualKeyW(vk_code, MAPVK_VK_TO_VSC)
     flags = KEYEVENTF_KEYUP if key_up else 0
     if _is_extended_key(vk_code):

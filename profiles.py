@@ -1,44 +1,24 @@
-"""profiles.py -- save/load/delete named profiles (Remapper entries, Macro
-defs, Window Select target, and Overlay config) to a single JSON file on
-disk (`profiles.json` under `%LOCALAPPDATA%\\Shattered Gaming Overlay\\` --
-see PROFILES_FILE's own comment for why it's not repo-root/exe-relative --
-mirrors R9Tools' profiles.py convention, minus its Interception/recoil/
-rapidfire-specific fields, which this project deliberately has none of).
+"""profiles.py -- save/load/delete named profiles to profiles.json under
+%LOCALAPPDATA% (see PROFILES_FILE's own comment for why not repo/exe-relative).
+Each profile snapshots Remapper entries, Macros, Window Select target, and
+Overlay config.
 
-Safety pattern ("always starts disabled, you opt back in") -- Remapper/
-Macros/Window Select only
--------------------------------------------------------------------------
-Mirrors R9Tools' `loadProfile()`, but per-module instead of unconditional:
-on `apply_profile()`, every Remapper entry's `enabled` is forced False
-unless the profile's `persist_remapper` flag is set, every Macro's
-`enabled` is forced False unless `persist_macros` is set, and the saved
-Window Select target is dropped back to Global (`selected = None`) unless
-`persist_window_select` is set. This is the ONLY place that safety pattern
-is applied -- both a fresh-launch `load_all()` and a user clicking Load in
-panels/profiles.py go through this same `apply_profile()` call, so there is
-exactly one code path that can restore a profile's live state.
+Safety pattern (Remapper/Macros/Window Select only): on `apply_profile()`,
+every Remapper entry's `enabled` is forced False unless `persist_remapper`
+is set, every Macro's `enabled` forced False unless `persist_macros` is set,
+and the saved Window Select target drops back to Global unless
+`persist_window_select` is set. This is the only place that pattern is
+applied -- both startup `load_all()` and the panel's Load button go through
+this same `apply_profile()` call. Overlay config is NOT subject to this --
+it always restores fully, since it's passive/non-injecting with no
+equivalent safety concern.
 
-Overlay config (crosshair, Stats HUD, status indicators) is deliberately
-NOT subject to this safety pattern -- it always restores fully on Load,
-no persist_* flag needed. The pattern above exists specifically because
-silently reactivating input injection (Remapper/Macros) or a window target
-is a real safety concern; the HUD overlay is a passive, non-injecting,
-read-only visual layer with no equivalent risk, so gating it the same way
-would just be friction for a "load my per-game crosshair" the whole feature
-exists for.
-
-Data shape
-----------
-`AppState.profiles.profiles` (a list of `ProfileDef`) only ever carries
-per-profile *metadata* (id/name/protected/persist_* flags) -- it was
-designed as "the editable mirror" of what this module owns (see
-app_state.py's own docstring). The actual Remapper-entries/Macro-defs/
-Window-Select-target/Overlay-config *payload* for every profile is owned
-here, in a module-level cache keyed by profile id, and is what actually
-gets serialized to/from profiles.json. `AppState.remapper` / `AppState.macros`
-/ `AppState.window_select` / `AppState.overlay` only ever hold the CURRENTLY
-ACTIVE profile's live, editable state -- `save_profile()` is what snapshots
-that live state back into a profile's payload.
+`AppState.profiles.profiles` (`ProfileDef` list) carries per-profile
+metadata only (id/name/protected/persist_* flags). The actual payload for
+every profile lives here, in a module-level cache keyed by profile id, and
+is what serializes to/from profiles.json. `AppState.remapper` / `.macros` /
+`.window_select` / `.overlay` hold only the currently active profile's live
+state -- `save_profile()` snapshots that back into a profile's payload.
 """
 
 from __future__ import annotations
@@ -68,14 +48,10 @@ from app_state import (
 )
 from key_capture import KeyBind, UNBOUND
 
-# NOT Path(__file__).resolve().parent -- that's the repo directory when
-# running from source, but resolves to PyInstaller onefile's ephemeral
-# per-launch extraction temp dir (sys._MEIPASS) in the actual frozen build,
-# which is deleted when the app exits. Confirmed by direct repro: profiles
-# were silently never persisting in the real installed app at all. Mirrors
-# updater.py's _log_dir(), which already uses this same %LOCALAPPDATA%
-# location correctly (confirmed working -- its logs/ subfolder is real and
-# persists across launches).
+# NOT Path(__file__).resolve().parent -- in a frozen PyInstaller onefile
+# build that resolves to the ephemeral per-launch extraction temp dir
+# (sys._MEIPASS), which is deleted on exit, so profiles would never persist.
+# Mirrors updater.py's _log_dir(), which uses this same %LOCALAPPDATA% location.
 PROFILES_FILE = Path(os.getenv("LOCALAPPDATA") or tempfile.gettempdir()) / "Shattered Gaming Overlay" / "profiles.json"
 DEFAULT_NAME = "Default"
 
@@ -83,15 +59,12 @@ _fallback_counter = itertools.count(1)
 
 
 def _fallback_id(prefix: str) -> str:
-    # Only ever used to backfill a missing/corrupt id read from disk --
-    # profiles.json entries written by this module always carry a real id.
+    # Backfills a missing/corrupt id read from disk -- entries this module
+    # writes always carry a real id.
     return f"{prefix}-restored-{next(_fallback_counter)}"
 
 
-# A profile's actual saved payload: Remapper entries, Macro defs, the
-# Window Select target (or None for Global), and the Overlay config
-# (Stats HUD/crosshair/status indicators). Kept separate from ProfileDef
-# (metadata only) -- see module docstring.
+# Payload only -- metadata lives on ProfileDef, see module docstring.
 _ProfilePayload = Dict[str, object]
 
 _payload_lock = threading.Lock()
@@ -289,10 +262,8 @@ def _overlay_to_json(o: OverlayState) -> dict:
 
 
 def _overlay_from_json(d: Optional[dict]) -> OverlayState:
-    # `d` is missing entirely for any profile saved before Overlay config
-    # became part of the payload -- OverlayState()'s own defaults (Stats HUD
-    # off, no crosshair, no indicators) are the right fallback rather than
-    # raising or silently dropping the profile.
+    # Missing for profiles saved before Overlay config existed -- default
+    # OverlayState() is the right fallback rather than raising.
     d = d or {}
     return OverlayState(
         stats_hud=_stats_hud_from_json(d.get("stats_hud")),

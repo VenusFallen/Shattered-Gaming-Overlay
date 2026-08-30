@@ -1,11 +1,8 @@
 @echo off
 setlocal
 
-rem Build script for Shattered Gaming Overlay. Mirrors R9Tools' own build
-rem automation (D:\Projects\Python\Testing\R9Tools\build.bat runs just the
-rem PyInstaller step; this project's pipeline additionally scripts the Inno
-rem Setup compile + release-zip steps that R9Tools does by hand, per this
-rem task's explicit ask) rather than reinventing the orchestration.
+rem Build script for Shattered Gaming Overlay: PyInstaller build, Inno Setup
+rem compile, and release-zip packaging.
 rem
 rem Build requirements: pip install pyinstaller (see requirements.txt for
 rem the rest -- psutil, pywin32, imgui-bundle, requests, pythonnet).
@@ -13,10 +10,9 @@ rem Also requires Inno Setup 6 (ISCC.exe) for step 2.
 rem
 rem Run this from the project root (the directory containing this file).
 
-rem Read VERSION once, up front -- used both for the ISCC /D define (so
-rem ShatteredGamingOverlay.iss's AppVersion can never drift out of sync with
-rem version.py again, a real bug found and fixed during the pre-1.0 QA pass)
-rem and for the release zip name in Step 3.
+rem Read VERSION once, up front -- used for the ISCC /D define (keeps
+rem ShatteredGamingOverlay.iss's AppVersion in sync with version.py) and
+rem for the release zip name in Step 3.
 for /f "usebackq tokens=*" %%v in (`python -c "import version; print(version.VERSION)"`) do set SGO_VERSION=%%v
 if "%SGO_VERSION%"=="" (
     echo ERROR: could not read VERSION from version.py

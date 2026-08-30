@@ -1,38 +1,18 @@
 """titlebar.py -- themed custom title bar for the borderless Companion window.
 
-main.py runs the Companion window with `app_window_params.borderless = True`
-(see that module's docstring for the introspected `AppWindowParams` fields
-this relies on). Removing OS chrome removes the OS-drawn title bar along
-with it -- its drag region and its minimize/maximize/close buttons -- so
-this module rebuilds a slim, themed replacement strip that shell.py renders
-at the very top of every frame, above the sidebar+content row.
+main.py runs with `app_window_params.borderless = True`, which drops the OS
+title bar (drag region + min/max/close). This module rebuilds a themed
+replacement strip that shell.py renders at the top of every frame.
 
-Why this is hand-rolled instead of using Hello ImGui's own borderless
-support: `AppWindowParams.borderless_movable` / `_resizable` / `_closable`
-exist (confirmed in the bundled `hello_imgui.pyi`) and do provide a generic
-drag zone / resize corner / close button for free -- but they're unstyled,
-have no minimize/maximize affordance at all, and the docstring only
-guarantees a drag zone "at the top of the window", not that it composites
-correctly *underneath* real ImGui buttons drawn in that same strip. Rather
-than gamble on that interaction, this bar avoids the ambiguity entirely:
+`borderless_movable`/`_closable` are left False: Hello ImGui's generic drag
+zone and close button are unstyled and have no min/max affordance, so drag
+is hand-rolled via the Win32 "release capture, send WM_NCLBUTTONDOWN/
+HTCAPTION" trick, and close/min/max are themed buttons instead.
+`borderless_resizable` stays True -- Hello ImGui's resize-corner zone
+doesn't overlap this strip, nothing to hand-roll there.
 
-  - `borderless_movable`  is left False -- dragging is implemented directly
-    below via the classic Win32 "release capture, then send the titlebar a
-    WM_NCLBUTTONDOWN/HTCAPTION click" trick (`_start_native_drag`), fired
-    only from an `imgui.invisible_button` region that is geometrically
-    disjoint from the minimize/maximize/close buttons -- so there is no
-    hover/hit-test race to reason about, by construction, not by assumption.
-  - `borderless_resizable` is left True -- edge/corner resizing is exactly
-    what Hello ImGui's own resize-corner zone is for, and it doesn't
-    overlap this top strip at all, so there's nothing to hand-roll there.
-  - `borderless_closable`  is left False -- this bar draws its own themed
-    close button instead of Hello ImGui's generic one.
-
-imgui_bundle's Python binding has no "minimize/maximize/close the window"
-call of its own (only the RunnerParams-level `app_shall_exit` flag, used
-below for Close). Minimize and maximize/restore are therefore real Win32
-`ShowWindow` calls via `ctypes`, matching the pattern input_hooks.py already
-uses elsewhere in this project for other user-mode Win32 APIs.
+imgui_bundle has no minimize/maximize/close call of its own; those go
+through raw Win32 `ShowWindow` via ctypes (same pattern as input_hooks.py).
 """
 
 from __future__ import annotations
@@ -68,11 +48,9 @@ BAR_HEIGHT_UNSCALED = 38.0
 
 
 def _hwnd() -> int:
-    """The Companion window's own HWND. `GetActiveWindow` is scoped to this
-    process's own message queue -- there is exactly one top-level window in
-    this process, so this is unambiguous whenever the window has focus.
-    Falls back to a title lookup for the rare frame where it briefly
-    doesn't (e.g. right after a programmatic ShowWindow call)."""
+    """The Companion window's HWND. Falls back to a title lookup for the rare
+    frame where GetActiveWindow briefly returns nothing (e.g. right after a
+    programmatic ShowWindow call)."""
     hwnd = user32.GetActiveWindow()
     if not hwnd:
         hwnd = user32.FindWindowW(None, WINDOW_TITLE)
@@ -98,33 +76,20 @@ def _toggle_maximize() -> None:
 
 
 def _close(settings) -> None:
-    # Hide-to-tray, not exit: the tray icon (tray_icon.py) is what owns a
-    # real, full application exit now (its Quit menu item sets this same
-    # app_shall_exit flag). Falls back to actually exiting only if the tray
-    # icon never came up (e.g. Shell_NotifyIcon failed) -- otherwise closing
-    # the X button would strand the user with no way to get the window back.
-    # `settings.close_minimizes_to_tray` (panels/settings.py's Window
-    # behavior card) lets the user opt out of hide-to-tray entirely -- when
-    # off, skip straight to the real-exit path below even if the tray icon
-    # is running.
+    # Hide-to-tray, not exit -- tray_icon.py owns real exit via its Quit item
+    # (same app_shall_exit flag). Falls back to a real exit if the tray icon
+    # never came up. `settings.close_minimizes_to_tray` opts out entirely.
     if settings.close_minimizes_to_tray and tray_icon.is_running():
         hwnd = _hwnd()
         if hwnd:
-            # Minimize before hiding, not a bare SW_HIDE: Windows only fires
-            # WM_SIZE/SIZE_MINIMIZED (what GLFW's window proc uses to set its
-            # own iconified flag, which is what makes Hello ImGui skip the
-            # render loop -- see window_select.py's focus-tracking fix, which
-            # exists precisely because that skip stops _show_gui from firing)
-            # on a real minimize transition, not a plain hide. A raw SW_HIDE
-            # alone would leave the render loop running at full/idle rate
-            # while completely invisible. SW_RESTORE from the tray's IsIconic
-            # check already handles un-minimizing and un-hiding in one call.
+            # Minimize before hiding: a bare SW_HIDE never fires
+            # WM_SIZE/SIZE_MINIMIZED, so GLFW never sets iconified and Hello
+            # ImGui keeps running the render loop while fully invisible.
             user32.ShowWindow(hwnd, _SW_MINIMIZE)
             user32.ShowWindow(hwnd, _SW_HIDE)
         return
-    # Goes through Hello ImGui's own exit flag rather than posting WM_CLOSE
-    # directly, so the normal shutdown path (main.py's before_exit callback,
-    # which tears down the bind-capture hook) still runs.
+    # Via Hello ImGui's exit flag, not WM_CLOSE directly, so main.py's
+    # before_exit shutdown path (tears down the bind-capture hook) still runs.
     hi.get_runner_params().app_shall_exit = True
 
 
@@ -138,8 +103,7 @@ def _start_native_drag() -> None:
 
 def _bar_button(theme, str_id: str, icon: str, hover_color, size: float) -> bool:
     """One title-bar glyph button: transparent until hovered, then a themed
-    fill (danger-red for Close, a neutral hover tint for the others -- the
-    standard Windows/Discord-style convention), plus the icon itself, so
+    fill (danger-red for Close, neutral for the rest) plus the icon, so
     hover state is never carried by color alone."""
     imgui.push_id(str_id)
     imgui.push_style_color(imgui.Col_.button, (0.0, 0.0, 0.0, 0.0))
@@ -159,11 +123,8 @@ def render(ctx: PanelContext) -> None:
     btn_w = bar_h * 1.15
 
     imgui.push_style_color(imgui.Col_.child_bg, theme.bg_sidebar)
-    # NoScrollbar/NoScrollWithMouse: this strip's content (icon/name + three
-    # square buttons) is sized to fit bar_h exactly, but without suppressing
-    # the scrollbar explicitly, a 1-2px rounding-driven overflow was enough
-    # to spawn a real vertical scrollbar over the button column (caught only
-    # by an actual screenshot, not by reasoning about the layout math).
+    # Suppress scrollbar: rounding-driven 1-2px overflow was otherwise enough
+    # to spawn a vertical scrollbar over the button column.
     no_scroll = imgui.WindowFlags_.no_scrollbar | imgui.WindowFlags_.no_scroll_with_mouse
     imgui.begin_child("titlebar", imgui.ImVec2(0, bar_h), imgui.ChildFlags_.none, no_scroll)
 
@@ -176,15 +137,10 @@ def render(ctx: PanelContext) -> None:
     # icon/name drawn on top via the draw list (non-interactive, so it can
     # never steal the drag region's hover/click). ---
     imgui.invisible_button("##titlebar-drag", imgui.ImVec2(drag_w, bar_h))
-    # Deliberately no double-click-to-maximize here: the very first mouse-down
-    # of ANY click already fires `_start_native_drag`, which hands the click
-    # off to a blocking Win32 modal move-loop before a second click could
-    # ever be distinguished from it -- confirmed by actually trying it (a
-    # synthetic double-click landed as two independent drags, never a
-    # double-click), not assumed. Doing this properly would mean permanently
-    # reporting HTCAPTION for this region from a real WM_NCHITTEST subclass
-    # instead of a per-press SendMessage, which is a bigger, riskier change
-    # (a live WNDPROC hook via ctypes) than this bar's scope calls for.
+    # No double-click-to-maximize: the first mouse-down already fires
+    # _start_native_drag into a blocking Win32 move-loop, so a second click
+    # never arrives as a distinguishable double-click. Fixing that needs a
+    # real WM_NCHITTEST subclass, out of scope here.
     if imgui.is_item_activated():
         _start_native_drag()
 

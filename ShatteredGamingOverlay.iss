@@ -1,61 +1,32 @@
-; Inno Setup script for Shattered Gaming Overlay. Ported from R9Tools'
-; R9Tools.iss (D:\Projects\Python\Testing\R9Tools\R9Tools.iss) -- same
-; overall structure (installs to Program Files, Start Menu shortcut, silent
-; self-update relaunch handling), matching updater.py's
-; launch_installer_and_quit() assumption that the eventual installer is
+; Inno Setup script for Shattered Gaming Overlay. Installs to Program Files,
+; Start Menu shortcut, silent self-update relaunch handling -- matches
+; updater.py's launch_installer_and_quit() assumption that the installer is
 ; Inno-Setup-based and accepts /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
 ; /LOG=<path>.
 ;
-; Deliberately NOT carried over from R9Tools.iss:
-;   - The entire Interception driver install/uninstall step (
-;     InstallInterceptionDriver, IsInterceptionServiceRunning,
-;     IsInterceptionDriverActive, NeedRestart, the [UninstallRun] driver
-;     removal, installer_assets\install-interception.exe). This project has
-;     no driver at all -- see .claude\agents\engine-agent.md's hard rule --
-;     that's the whole point of its architecture. There is nothing to
-;     install, nothing that needs a reboot, and nothing to uninstall here.
-;   - Any LibreHardwareMonitor driver install step. stats_poller.py already
-;     runs with IsRing0Enabled = False (confirmed in stats_poller.py), so
-;     LHM needs no separate driver install either -- only its DLLs, which
-;     ship as plain data files via the [Files] section below.
-;   - The shellexec elevation workaround R9Tools.iss needed on its
-;     post-install [Run] entry. Both this installer and the app it installs
-;     now run at the SAME privilege level (both admin -- see PrivilegesRequired
-;     below and ShatteredGamingOverlay.spec's uac_admin=True), so there's no
-;     privilege mismatch to bridge with ShellExec's runas verb; a plain
-;     launch (Exec/[Run] Filename=) already runs at the right level.
-;     (uac_admin / PrivilegesRequired=admin themselves ARE carried over now,
-;     unlike the original build of this file -- see the note below.)
+; No driver install/uninstall step: this project has no kernel driver (see
+; .claude\agents\engine-agent.md's hard rule). No LibreHardwareMonitor driver
+; step either -- stats_poller.py runs with IsRing0Enabled = False, so LHM
+; needs only its DLLs, shipped as plain data files via [Files] below.
 ;
-; PrivilegesRequired=admin (set below) is a deliberate CHANGE from this
-; project's original no-elevation design -- everything else in the app
-; (input hooks, LibreHardwareMonitor with IsRing0Enabled=False) still needs
-; no elevation at all, but stats_poller.py's FPS tracking (PresentMon, a
-; real-time ETW trace session) does: confirmed by direct repro, PresentMon
-; fails immediately with "access denied" unless elevated. Rather than
-; self-elevate only the PresentMon subprocess (which would mean a UAC prompt
-; only the first time FPS tracking starts), the whole app now requests admin
-; at launch, so the installer needs to match that privilege level too.
-;   - AppMutex=R9Tools_AppMutex. R9Tools' main.py creates and holds a named
-;     mutex for its whole lifetime specifically so CloseApplications=yes can
-;     target it; main.py in this project does not create an equivalent
-;     mutex yet (that would be an application-logic change, out of
-;     build-agent's scope -- see updater.py's own module docstring, which
-;     already documents this as a known, deliberate gap). CloseApplications
-;     =yes is still set below without an AppMutex -- Inno Setup's Restart
-;     Manager integration also detects processes holding a lock on the
-;     actual file being replaced (ShatteredGamingOverlay.exe) even with no
-;     AppMutex configured, so this still provides real defense-in-depth
-;     (per updater.py's own "belt-and-suspenders safety net" framing) on
-;     top of updater.py's Wait-Process watcher, which remains the primary
-;     mechanism closing the race.
+; Installer and app both run admin (PrivilegesRequired=admin below,
+; ShatteredGamingOverlay.spec's uac_admin=True), so the post-install [Run]
+; launch needs no ShellExec runas workaround -- same privilege level, plain
+; Exec/[Run] Filename= already runs at the right level. Admin is required
+; because stats_poller.py's FPS tracking (PresentMon, a real-time ETW trace
+; session) fails with "access denied" unless elevated; the whole app
+; requests admin at launch rather than self-elevating just PresentMon.
+;
+; No AppMutex set: main.py doesn't hold a named mutex for CloseApplications
+; to target (that would be an application-logic change, out of scope here --
+; see updater.py's module docstring). CloseApplications=yes is still set
+; below without one -- Inno's Restart Manager also detects processes locking
+; the file being replaced (ShatteredGamingOverlay.exe), so this remains a
+; useful defense-in-depth layer on top of updater.py's Wait-Process watcher,
+; which is the primary mechanism closing the race.
 
-; MyAppVersion is passed in by build.bat via /DMyAppVersion=<version.py's
-; VERSION> at compile time, so AppVersion below can never drift out of sync
-; with the actual app again (found and fixed as a real bug during the pre-
-; 1.0 QA pass: this file's AppVersion was hardcoded and had gone stale
-; against version.py). The fallback here only matters if ISCC is ever run
-; directly instead of through build.bat.
+; Passed in by build.bat via /DMyAppVersion so this can't drift from
+; version.py. Fallback only matters if ISCC runs outside build.bat.
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
@@ -76,18 +47,14 @@ UninstallDisplayIcon={app}\ShatteredGamingOverlay.exe
 ; Require Windows 10 or later
 MinVersion=10.0
 
-; See the header comment above -- the app itself now requires admin
-; (ShatteredGamingOverlay.spec's uac_admin=True, for PresentMon/FPS
-; tracking), so the installer matches that privilege level explicitly
-; rather than relying on whatever Inno Setup's own default happens to be.
+; Matches ShatteredGamingOverlay.spec's uac_admin=True (see header note).
 PrivilegesRequired=admin
 
-; See the deliberately-not-carried-over note above re: no AppMutex yet.
+; See header note above re: no AppMutex yet.
 CloseApplications=yes
-; Setup's own post-close auto-relaunch is disabled in favor of this script's
+; Setup's own post-close auto-relaunch is disabled in favor of
 ; RelaunchAppAfterSilentUpdate() below (ssPostInstall), which retries with a
-; settle delay and verifies via tasklist that the relaunch actually stuck --
-; mirrors R9Tools.iss's own reasoning for the same override.
+; settle delay and verifies via tasklist that the relaunch actually stuck.
 RestartApplications=no
 
 [Files]
@@ -113,16 +80,13 @@ Name: desktopicon; Description: "Create a desktop shortcut"; GroupDescription: "
 
 [Run]
 ; Launch Shattered Gaming Overlay after install (optional, user can uncheck).
-; No shellexec needed here -- installer and app are both admin now (see the
-; header comment / PrivilegesRequired above), so a plain postinstall launch
-; already runs at the right privilege level.
+; No shellexec needed -- installer and app both run admin (see header note).
 Filename: "{app}\ShatteredGamingOverlay.exe"; Description: "Launch Shattered Gaming Overlay"; \
     Flags: nowait postinstall skipifsilent
 
 [Code]
 // True if ShatteredGamingOverlay.exe is currently running (via tasklist).
-// Used to verify a silent-relaunch actually stuck, mirroring R9Tools.iss's
-// IsAppProcessRunning().
+// Used to verify a silent relaunch actually stuck.
 function IsAppProcessRunning(): Boolean;
 var
   ResultCode: Integer;
@@ -145,53 +109,54 @@ end;
 
 // The "Launch Shattered Gaming Overlay" [Run] entry uses skipifsilent, so a
 // silent self-update (updater.py runs this installer with /VERYSILENT)
-// needs to relaunch the app itself here instead. Mirrors R9Tools.iss's
-// RelaunchAppAfterSilentUpdate(): retried with an increasing settle delay
-// (2s/4s/6s) and verified via IsAppProcessRunning(), since the freshly
-// extracted PyInstaller bootloader can occasionally fail to come up right
-// after a silent install's file-copy step (AV real-time scanning race).
+// relaunches the app here instead. Retried with an increasing settle delay
+// and verified via IsAppProcessRunning(), since the freshly extracted
+// PyInstaller bootloader can occasionally be slow to come up after a
+// silent install's file-copy step (AV real-time scanning race).
 procedure RelaunchAppAfterSilentUpdate();
 var
   ResultCode: Integer;
   Attempt: Integer;
+  LaunchAttempt: Integer;
   SettleDelayMs: Integer;
 begin
-  // Launched exactly ONCE. An earlier version of this procedure called
-  // Exec() again on every retry iteration -- when the first launch was
-  // merely slow to register with tasklist (the AV real-time-scanning race
-  // described above) rather than actually failed, that spawned a second,
-  // and sometimes third, fully separate running instance instead of just
-  // catching up to the one already on its way. A real bug, reported after
-  // shipping with the old loop. The retries below only re-check whether
-  // that single launch came up, with a growing wait between checks --
-  // never launching a second process.
-  Sleep(2000);
-  Exec(ExpandConstant('{app}\ShatteredGamingOverlay.exe'), '', '',
-    SW_SHOWNORMAL, ewNoWait, ResultCode);
-
-  SettleDelayMs := 1500;
-  for Attempt := 1 to 3 do
+  // Up to two real launches. The second only fires after every check on the
+  // first has come back "not running" -- avoids spawning a duplicate
+  // instance if the first launch is just slow to register with tasklist
+  // (AV scan race), while still recovering from a genuinely failed launch
+  // (e.g. bootloader "Failed to load Python DLL").
+  for LaunchAttempt := 1 to 2 do
   begin
-    Sleep(SettleDelayMs);
+    Sleep(2000);
+    Exec(ExpandConstant('{app}\ShatteredGamingOverlay.exe'), '', '',
+      SW_SHOWNORMAL, ewNoWait, ResultCode);
 
-    if IsAppProcessRunning() then
+    SettleDelayMs := 1500;
+    for Attempt := 1 to 3 do
     begin
-      Log('RelaunchAppAfterSilentUpdate: ShatteredGamingOverlay.exe confirmed ' +
-        'running (check ' + IntToStr(Attempt) + ', last wait was ' +
-        IntToStr(SettleDelayMs) + 'ms).');
-      Exit;
+      Sleep(SettleDelayMs);
+
+      if IsAppProcessRunning() then
+      begin
+        Log('RelaunchAppAfterSilentUpdate: ShatteredGamingOverlay.exe confirmed ' +
+          'running (launch attempt ' + IntToStr(LaunchAttempt) + ', check ' +
+          IntToStr(Attempt) + ', last wait was ' + IntToStr(SettleDelayMs) + 'ms).');
+        Exit;
+      end;
+
+      Log('RelaunchAppAfterSilentUpdate: ShatteredGamingOverlay.exe not found ' +
+        'running (launch attempt ' + IntToStr(LaunchAttempt) + ', check ' +
+        IntToStr(Attempt) + ', wait was ' + IntToStr(SettleDelayMs) + 'ms).');
+      SettleDelayMs := SettleDelayMs + 1500;
     end;
 
-    Log('RelaunchAppAfterSilentUpdate: ShatteredGamingOverlay.exe not found ' +
-      'running on check ' + IntToStr(Attempt) + ' (wait was ' +
-      IntToStr(SettleDelayMs) + 'ms) -- checking again before giving up, ' +
-      'not launching another instance.');
-    SettleDelayMs := SettleDelayMs + 1500;
+    Log('RelaunchAppAfterSilentUpdate: launch attempt ' + IntToStr(LaunchAttempt) +
+      ' never came up after 3 checks.');
   end;
 
-  Log('RelaunchAppAfterSilentUpdate: gave up after 3 checks -- the silent ' +
-    'update completed but ShatteredGamingOverlay.exe did not appear to stay ' +
-    'running. The user will need to launch it manually.');
+  Log('RelaunchAppAfterSilentUpdate: gave up after 2 launch attempts -- the silent ' +
+    'update completed but ShatteredGamingOverlay.exe did not stay running. ' +
+    'The user will need to launch it manually.');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);

@@ -1,33 +1,20 @@
-"""
-manual_tests/hook_and_inject_smoketest.py
+"""manual_tests/hook_and_inject_smoketest.py -- hardware-in-the-loop smoke
+test for input_hooks.py + input_inject.py.
 
-Hardware-in-the-loop smoke test for input_hooks.py + input_inject.py.
+Not an automated test -- requires a human at the keyboard/mouse to confirm a
+low-level hook actually fires on a real key press and that injected input
+actually does something in a real target application.
 
-This is NOT an automated test -- it requires a human at the keyboard/mouse
-to confirm real behavior. Static analysis and unit tests can confirm the
-ctypes struct layouts and that SendInput doesn't raise; they cannot confirm
-that a low-level hook actually fires on a real physical key press, or that
-an injected mouse move/click/scroll actually does something in a real
-target application. Run this manually and read its output.
-
-Mirrors R9Tools' convention of keeping manual/hardware tests separate from
-automated ones.
-
-Usage:
-    python manual_tests/hook_and_inject_smoketest.py
+Usage: python manual_tests/hook_and_inject_smoketest.py
 
 Two phases:
-  1. CAPTURE   -- press real keys / mouse buttons / move / scroll and watch
-                  the console. Confirms hooks fire and that physical input
-                  is correctly reported as injected=False.
-  2. INJECTION -- with your explicit go-ahead at each step, the script
-                  synthesizes keyboard/mouse input and asks you to confirm
-                  visually that it actually happened (text appears, a
-                  click registers, a scroll happens).
+  1. CAPTURE   -- press real keys/buttons/scroll and watch the console.
+                  Confirms hooks fire and physical input reports injected=False.
+  2. INJECTION -- with explicit go-ahead at each step, synthesizes
+                  keyboard/mouse input for visual confirmation.
 
-Note: this project deliberately never synthesizes relative mouse movement
-(no recoil compensation, no aim assist -- that's a hard rule for this
-project). There is no mouse-move phase in this test for that reason.
+No mouse-move phase: this project never synthesizes relative mouse movement
+(hard rule -- no recoil compensation, no aim assist).
 """
 
 from __future__ import annotations
@@ -157,12 +144,9 @@ _CHAR_TO_VK[" "] = 0x20  # VK_SPACE
 
 
 def _type_text(text: str) -> None:
-    """Very small demo typist: uppercase letters, digits, and spaces only.
-
-    Not a general text-injection utility -- real character->VK translation
-    (shift state, keyboard layout, dead keys) belongs to a future
-    macro_engine.py concern, not this smoke test.
-    """
+    """Small demo typist: uppercase letters, digits, and spaces only. Not a
+    general text-injection utility -- real character->VK translation (shift
+    state, keyboard layout, dead keys) is out of scope for this smoke test."""
     for ch in text.upper():
         vk = _CHAR_TO_VK.get(ch)
         if vk is None:

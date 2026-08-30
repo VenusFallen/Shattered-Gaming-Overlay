@@ -1,6 +1,7 @@
 """panels/remapper.py -- Remapper panel: source key/button -> destination
 key/button pairs. Purely UI state (app_state.RemapEntry list); no matching
-or SendInput happens here -- that's the future root-level remapper.py.
+or SendInput happens here -- that's the root-level remapper.py, which reads
+this state each frame via update_snapshot().
 """
 
 from __future__ import annotations

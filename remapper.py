@@ -1,77 +1,38 @@
 """remapper.py -- matches live keyboard/mouse-button events against
 `AppState.remapper.entries` (source -> destination), suppresses the matched
 physical event, and injects the destination via `input_inject`. Pure
-user-mode: built entirely on `input_hooks.HookManager` (WH_KEYBOARD_LL /
-WH_MOUSE_LL) for capture and `input_inject.send_key` /
-`input_inject.send_mouse_button` for injection -- no driver, no ViGEm, no
-game-process access.
+user-mode: `input_hooks.HookManager` for capture, `input_inject.send_key` /
+`send_mouse_button` for injection -- no driver, no ViGEm, no game-process
+access.
 
-Effective event stream
------------------------
-By design, a remap also registers as its destination for the rest of the
-app's own trigger matching (so a remapped key correctly arms macros/toggles
-bound to that destination), not just re-emitting the raw OS event. Rather
-than have macro_engine.py independently re-match raw hook
-events (and duplicate the remap-lookup logic), this module publishes a
-normalized `EffectiveInputEvent` for every physical keyboard/mouse-button
-event it observes:
+A remap also registers as its destination for the rest of the app's own
+trigger matching (so a remapped key correctly arms macros bound to that
+destination), not just re-emitting the raw OS event. Every physical
+keyboard/mouse-button event is published as a normalized
+`EffectiveInputEvent`: destination identity + `from_remap=True` if it matched
+an enabled remap entry, original identity + `from_remap=False` otherwise.
+`macro_engine.py` subscribes via `add_effective_listener` instead of
+installing its own hook, so there's exactly one place a remap's destination
+becomes visible to the rest of the app's trigger matching.
 
-  - If the event matched an enabled remap entry, the published event carries
-    the *destination* identity (`from_remap=True`) -- the same identity that
-    was just injected.
-  - If it didn't match anything, the published event carries the original
-    physical identity unchanged (`from_remap=False`).
+Window-filter gating: when a process is targeted
+(`WindowSelectState.selected` set), match/inject goes inert the instant that
+process loses OS foreground focus and resumes the instant it regains it.
+Applied once, centrally, in `_handle()` -- while closed, events are neither
+remapped/suppressed nor published, which is what makes the macro engine go
+inert alongside the remapper without its own focus-tracking logic. The gate
+is evaluated fresh on every event via `window_select.cached_foreground_pid()`,
+not a value cached in `update_snapshot()` -- Hello ImGui's `show_gui`
+callback doesn't fire while the Companion window is minimized, which would
+freeze a cached gate at whatever it was the instant before minimizing.
+`update_snapshot()` only hands off the target pid itself (not focus-sensitive);
+`_handle()` checks focus live against window_select's own polling thread.
 
-`macro_engine.py` subscribes to this stream via `add_effective_listener`
-instead of installing its own hook, so there is exactly one place a remap's
-destination becomes visible to the rest of the app's trigger matching.
-
-Window-filter gating
----------------------
-By design, when a process is targeted (`WindowSelectState.selected` is set)
-the match/inject step (not hook installation, which stays up for the whole
-app lifetime) goes inert the instant that process loses OS foreground focus,
-and resumes the instant it regains it. That gate is applied once, centrally,
-in `_handle()` below -- while closed, physical events are neither
-remapped/suppressed NOR published to the effective-event stream, which is
-what makes the Macro engine go inert together with the Remapper without
-needing its own separate focus-tracking logic.
-
-The gate is evaluated fresh on every physical event, on the hook thread
-itself, via `window_select.cached_foreground_pid()` -- deliberately NOT via
-a value stashed once per Companion-window frame in `update_snapshot()`.
-Hello ImGui's `show_gui` callback (where `update_snapshot()` is called from,
-see main.py) does not fire at all while the Companion window is minimized,
-which would otherwise freeze the gate open/closed at whatever it happened to
-be the instant before minimizing -- see `window_select.py`'s "Independent
-focus polling" docstring section for the full story. `update_snapshot()`
-below still hands off the target pid (just an int, changes only when the
-user picks a different process in the UI -- not focus-sensitive, so no
-staleness concern there), but the actual has-focus check happens live in
-`_handle()` against `window_select`'s own independently-polled background
-thread.
-
-Hook-sharing decision (vs. key_capture.py)
---------------------------------------------
-This module owns its OWN `HookManager` instance, separate from
-`key_capture.capture_service`'s. They serve genuinely different purposes
-with different lifecycles and suppression semantics:
-
-  - `key_capture.capture_service`'s hook is momentary (installed lazily on
-    first bind-button click, left running but logically idle otherwise) and
-    NEVER suppresses -- it only ever observes the next physical key/button
-    press for the "press a key to bind" UI widget.
-  - This module's hook is always-on for the whole app lifetime (installed
-    at startup alongside hud_overlay/capture_service, per this module's own
-    "hooks stay installed throughout" rule) and actively suppresses matched
-    source events every time a remap fires.
-
-Windows natively chains multiple WH_KEYBOARD_LL/WH_MOUSE_LL hooks together,
-so running two here is not "redundant" in the naive sense -- that concern
-is about accidentally doing the *same* job twice. Folding both
-sets of very different lifecycle/suppression semantics into one HookManager
-surface would be more error-prone than keeping the always-on, suppressing
-remap hook cleanly separate from the transient, passive bind-capture hook.
+This module owns its own `HookManager`, separate from
+`key_capture.capture_service`'s: that one is momentary and never suppresses
+(passive bind-capture); this one is always-on for the app's lifetime and
+actively suppresses matched source events. Windows chains multiple
+WH_KEYBOARD_LL/WH_MOUSE_LL hooks natively, so running both is not redundant.
 """
 
 from __future__ import annotations
@@ -86,9 +47,8 @@ import window_select
 from input_hooks import HookManager, KeyEvent, MouseButtonEvent
 from key_capture import KeyBind, is_mouse_vk, keybind_vk_to_mouse_button, mouse_button_to_vk
 
-# Avoid a hard import-time dependency on app_state's dataclasses beyond type
-# hints -- keeps this module importable/unit-testable without a live hook,
-# per input_hooks.py's own "capture and injection cleanly separated" goal.
+# Avoid a hard import-time dependency on app_state beyond type hints, so this
+# module stays importable/testable without a live hook.
 try:  # pragma: no cover - only used for type hints
     from app_state import RemapperState, WindowSelectState
 except Exception:  # pragma: no cover
@@ -98,13 +58,11 @@ except Exception:  # pragma: no cover
 
 @dataclass(frozen=True)
 class EffectiveInputEvent:
-    """A normalized post-remap identity: either a remap's destination (if
-    the physical event matched an enabled remap entry) or the original
-    physical identity (if it didn't). `vk_code` uses key_capture.py's
-    keyboard-vk / mouse-pseudo-vk scheme uniformly, so consumers (currently
-    only macro_engine.py) never need to care whether it originated from a
-    keyboard or a mouse button.
-    """
+    """A normalized post-remap identity: a remap's destination if the
+    physical event matched an enabled entry, else the original physical
+    identity. `vk_code` uses key_capture.py's keyboard-vk / mouse-pseudo-vk
+    scheme uniformly, so consumers don't need to care whether it originated
+    from a keyboard or a mouse button."""
 
     vk_code: int
     up: bool
@@ -124,30 +82,25 @@ class RemapperEngine:
         update_snapshot(remapper_state, window_select_state)
         add_effective_listener(callback)
 
-    Everything else runs on the hook's own background message-pump thread
-    (see input_hooks.HookManager) -- never read AppState.remapper /
-    AppState.window_select directly from there; update_snapshot() is the
-    only bridge, mirroring hud_overlay.py's lock-guarded-snapshot pattern.
+    Everything else runs on the hook's own background thread -- never read
+    AppState.remapper / AppState.window_select directly from there;
+    update_snapshot() is the only bridge.
     """
 
     def __init__(self) -> None:
         self._hook = HookManager()
         self._lock = threading.Lock()
 
-        # snapshot state, written only by update_snapshot() (Companion
-        # thread), read only by _handle() (hook thread). `_target_pid` is
-        # None when no process is targeted (gate always open); otherwise the
-        # pid the gate compares live against `window_select.
-        # cached_foreground_pid()` in `_handle()` -- see module docstring's
-        # "Window-filter gating" section for why the has-focus check itself
-        # is NOT part of this snapshot.
+        # Written only by update_snapshot() (Companion thread), read only by
+        # _handle() (hook thread). `_target_pid` is None when no process is
+        # targeted (gate always open); the has-focus check itself is
+        # deliberately NOT part of this snapshot -- see module docstring.
         self._mapping: Dict[int, KeyBind] = {}
         self._target_pid: Optional[int] = None
 
-        # hook-thread-only state (never touched from update_snapshot) --
-        # tracks which source identities are *currently* suppressed-and-
-        # remapped so a key held across a live config edit still releases
-        # the correct destination, mirroring R9Tools' _remapActive pattern.
+        # Hook-thread-only: tracks which source identities are currently
+        # suppressed-and-remapped so a key held across a live config edit
+        # still releases the correct destination.
         self._active_remaps: Dict[int, KeyBind] = {}
 
         self._listeners: List[EffectiveListener] = []
@@ -182,21 +135,14 @@ class RemapperEngine:
         self._listeners.append(callback)
 
     def update_snapshot(self, remapper_state: "RemapperState", window_select_state: "WindowSelectState") -> None:
-        """Call once per Companion-window frame (see main.py), regardless of
-        which panel is active -- mirrors hud_overlay.update_crosshair()'s
-        per-frame hand-off. KeyBind is a frozen dataclass, so storing the
-        destination references directly here is safe to read from the hook
-        thread without copying further.
+        """Call once per Companion-window frame. KeyBind is a frozen
+        dataclass, so storing destination references directly is safe to
+        read from the hook thread without copying further.
 
-        Only hands off *which* pid is targeted (or None) -- not whether it
-        currently has focus. That check is deliberately NOT snapshotted here
-        (see module docstring's "Window-filter gating" section): this
-        function is only ever called from Hello ImGui's `show_gui` callback,
-        which does not fire while the Companion window is minimized, so a
-        has-focus value cached here would freeze exactly when it matters
-        most. `_handle()` below checks focus live via
-        `window_select.cached_foreground_pid()` on every physical event
-        instead."""
+        Only hands off *which* pid is targeted (or None), not whether it
+        currently has focus -- see module docstring's "Window-filter gating"
+        section for why that check is evaluated live in `_handle()` instead
+        of snapshotted here."""
         mapping: Dict[int, KeyBind] = {}
         for entry in remapper_state.entries:
             if not entry.enabled:
@@ -232,25 +178,20 @@ class RemapperEngine:
             mapping = self._mapping
             target_pid = self._target_pid
 
-        # Evaluated live, every event, against window_select's own
-        # independently-polled background thread -- see module docstring's
-        # "Window-filter gating" section for why this is not read from a
-        # once-per-Companion-frame snapshot.
+        # Evaluated live, every event -- see module docstring's
+        # "Window-filter gating" section.
         gate_open = target_pid is None or window_select.cached_foreground_pid() == target_pid
 
         if not gate_open:
-            # Inert: a process is targeted and it doesn't currently have OS
-            # focus. Physical input passes through completely untouched --
-            # no remap, no macro-trigger visibility either (see module
-            # docstring's "Window-filter gating" section).
+            # Inert: targeted process doesn't currently have focus. Input
+            # passes through untouched -- no remap, no macro-trigger visibility.
             return None
 
         dest = mapping.get(vk)
 
         if dest is None:
-            # Not (currently) configured as a remap source. Still check for
-            # a stale-but-active remap on release, in case entries changed
-            # while the key was physically held -- see module docstring.
+            # Not currently a remap source. Still check for a stale-but-active
+            # remap on release, in case entries changed while the key was held.
             active_dest = self._active_remaps.pop(vk, None) if up else None
             if active_dest is None:
                 self._publish(EffectiveInputEvent(vk_code=vk, up=up, name=name, from_remap=False, time_ms=time_ms))

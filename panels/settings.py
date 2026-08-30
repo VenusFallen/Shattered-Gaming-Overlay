@@ -1,27 +1,12 @@
-"""panels/settings.py -- Settings panel: theme, UI scale, reduce motion,
-Target Window (folded in from the former standalone Window Select tab -- see
-panels/window_select.py), and the Updates card. Theme/scale/reduce-motion are
-fully live (see theme.apply_theme, called every frame from shell.py using
-this state).
+"""panels/settings.py -- Settings panel: theme, reduce motion, Target Window
+(panels/window_select.py's card), and Updates. Theme/reduce-motion are fully
+live via theme.apply_theme, called every frame from shell.py.
 
-Updates is wired to a real backend now -- see updater.py (the self-updater
-against GitHub Releases). `_render_updates` below only ever
-reads `ctx.state.settings.update_*` (written once per frame by
-`updater.update_manager.sync_to()`, called from main.py's `_show_gui`) and
-issues commands via `updater.update_manager` -- it never touches
-`updater.update_manager`'s internals directly. `render_auto_update_prompt`
-is the automatic check-on-launch popup; shell.py calls it unconditionally
-every frame (same placement as titlebar.render(ctx)) so it can show
-regardless of which panel is active.
-
-Note: no GitHub repo/release exists yet for this project (see updater.py's
-module docstring) -- the Check/Update/Install flow below is real and
-correct, but has never been exercised against an actual release. See
-updater.py's own notes on exactly what could and couldn't be verified
-without a live release.
-
-About (program description/version/credit) lives in its own top-level nav
-entry now -- see panels/about.py -- not here.
+Updates: `_render_updates` only reads `ctx.state.settings.update_*` (written
+by `updater.update_manager.sync_to()` from main.py) and issues commands via
+`updater.update_manager`, never touching its internals directly.
+`render_auto_update_prompt` is the check-on-launch popup, called
+unconditionally every frame from shell.py regardless of active panel.
 """
 
 from __future__ import annotations
@@ -45,22 +30,18 @@ from version import VERSION
 _AUTO_UPDATE_POPUP_ID = "Update Available"
 _UPDATE_FLOW_POPUP_ID = "Installing Update"
 
-# Statuses covered by render_update_flow_popup below -- the tail of the
-# update flow, after the initial ask (AVAILABLE, handled by
-# render_auto_update_prompt) has already been accepted, from either origin:
-# the auto-prompt's Update Now button or the Settings card's own Check
-# Now/Update button (_on_update_button_clicked; both origins only ever drive
-# updater.update_manager into these same statuses).
+# Statuses covered by render_update_flow_popup -- the tail of the update
+# flow after AVAILABLE has been accepted, from either the auto-prompt or the
+# Settings card's own button.
 _UPDATE_FLOW_STATUSES = (UpdateStatus.DOWNLOADING, UpdateStatus.READY, UpdateStatus.INSTALLING)
 
 _THEME_CARD = 84.0
 _THEME_SWATCH_ROW_H = 26.0
 _THEME_SWATCH_GAP = 3.0
 
-# Rainbow preview speed for the Color Cycle card specifically -- a fast,
-# continuous hue sweep across all four swatches (offset from each other) so
-# that one card visually reads as "this theme is animated" in the picker,
-# independent of whatever the user's actual Color A/B are configured to.
+# Fast preview sweep for the Color Cycle card's swatches (offset from each
+# other), independent of the user's actual Color A/B, so the card visibly
+# reads as animated in the picker.
 _RAINBOW_PERIOD_SEC = 4.0
 
 
@@ -77,29 +58,21 @@ def _theme_swatches(name: str, t: theme_module.Theme) -> list:
 
 
 def _theme_picker(theme: theme_module.Theme, current: str) -> str:
-    """Horizontal row of theme cards -- each shows a strip of that theme's
+    """Horizontal row of theme cards, each showing a strip of that theme's
     own palette swatches (background, accent, accent_active, text) with the
-    display name below, same "see it before you pick it" idea as the
-    crosshair style picker in panels/overlay.py. The Color Cycle card is the
-    one exception: its swatches are a live animated rainbow rather than
-    fixed colors, signaling at a glance that this theme is dynamic."""
+    display name below. Color Cycle's card uses a live animated rainbow
+    instead of fixed swatches, signaling that it's dynamic."""
     new_name = current
     draw_list = imgui.get_window_draw_list()
     u32 = lambda rgba: imgui.color_convert_float4_to_u32(imgui.ImVec4(*rgba))  # noqa: E731
-    # push_text_wrap_pos takes a window-LOCAL x, not a screen-space one --
-    # everything else in this function works in screen space (from
-    # get_cursor_screen_pos()), so every wrap-pos call below has to subtract
-    # this to convert. Passing the raw screen-space x here was the original
-    # bug: it wrapped at some point way off to the right of the actual
-    # window, i.e. never, which is why names overflowed their cards.
+    # push_text_wrap_pos takes a window-local x, not screen-space -- every
+    # wrap-pos call below must subtract this since the rest of the function
+    # works in screen space.
     window_x = imgui.get_window_pos().x
 
     names = theme_module.theme_names()
-    # Wrap to a new row rather than overflowing the card's width -- there
-    # are enough themes now (7) that they don't all fit on one line at a
-    # size big enough to hold 4 swatches + a name. Computed once, before the
-    # loop, from the width available right here (not reduced by anything
-    # this loop itself draws).
+    # Wrap to a new row rather than overflowing the card's width; computed
+    # once from the width available here.
     avail_w = imgui.get_content_region_avail().x
     spacing = imgui.get_style().item_spacing.x
     cards_per_row = max(1, int((avail_w + spacing) // (_THEME_CARD + spacing)))
@@ -168,9 +141,9 @@ def _render_appearance(ctx: PanelContext) -> None:
                 "-- like a slow RGB keyboard breathing effect, not a rainbow cycle.",
             )
             imgui.spacing()
-            # committed fires once, on drag-release inside the popup -- see
-            # hex_color_picker's docstring. Saving on every `changed` frame
-            # would mean a disk write per frame of drag.
+            # committed fires once, on drag-release -- see hex_color_picker's
+            # docstring. Saving on every `changed` frame would mean a disk
+            # write per frame of drag.
             _, settings.cycle_color_a, committed_a = widgets.hex_color_picker(
                 theme, "cycle-color-a", "Color A", settings.cycle_color_a
             )
@@ -181,10 +154,8 @@ def _render_appearance(ctx: PanelContext) -> None:
                 settings_store.save(ctx.state)
             imgui.spacing()
             imgui.set_next_item_width(260)
-            # Bounds are deliberately both "slow" -- even the fast end of
-            # this range (15s per full back-and-forth cycle) reads as an
-            # ambient drift, never a flash/strobe. See app_state.SettingsState
-            # .cycle_period_sec and theme.color_cycle_phase.
+            # Bounds are both "slow" -- even the fast end (15s per cycle)
+            # reads as ambient drift, never a flash/strobe.
             _, settings.cycle_period_sec = imgui.slider_float(
                 "Cycle speed##cycle", settings.cycle_period_sec, 15.0, 45.0, "%.0f sec per full cycle"
             )
@@ -221,8 +192,7 @@ def _render_window_behavior(ctx: PanelContext) -> None:
             settings_store.save(ctx.state)
 
 
-# Maps UpdateStatus -> (badge level, badge label). Mirrors R9Tools'
-# `_appStatusLbl` text-per-state mapping (see its panels/settings.py).
+# Maps UpdateStatus -> (badge level, badge label).
 def _status_badge_args(status: UpdateStatus, settings) -> tuple[str, str]:
     if status == UpdateStatus.CHECKING:
         return "info", "Checking for updates..."
@@ -241,9 +211,7 @@ def _status_badge_args(status: UpdateStatus, settings) -> tuple[str, str]:
     return "neutral", f"v{VERSION}"
 
 
-# Maps UpdateStatus -> (button label, enabled). Mirrors R9Tools'
-# `_appBtnClicked`'s idle/up_to_date/error -> available -> ready state
-# machine (see its panels/settings.py).
+# Maps UpdateStatus -> (button label, enabled).
 def _button_state(status: UpdateStatus) -> tuple[str, bool]:
     if status in (UpdateStatus.IDLE, UpdateStatus.UP_TO_DATE, UpdateStatus.ERROR):
         return "Check Now", True
@@ -260,11 +228,8 @@ def _on_update_button_clicked(status: UpdateStatus) -> None:
     elif status == UpdateStatus.AVAILABLE:
         updater.update_manager.start_download()
     elif status == UpdateStatus.READY:
-        # Only actually quit if the installer handoff succeeded -- mirrors
-        # titlebar.py's own `app_shall_exit = True` close path so the
-        # normal before_exit teardown still runs (see updater.py's
-        # install_and_quit docstring for why this must happen from here,
-        # not from inside updater.py itself, which has no UI dependency).
+        # Only quit if the installer handoff succeeded. Same app_shall_exit
+        # path as titlebar.py's close, so before_exit teardown still runs.
         if updater.update_manager.install_and_quit():
             hi.get_runner_params().app_shall_exit = True
 
@@ -309,12 +274,9 @@ def _render_updates(ctx: PanelContext) -> None:
 
 
 def render_auto_update_prompt(ctx: PanelContext) -> None:
-    """The automatic check-on-launch prompt: "Shattered Gaming Overlay vX is
-    available. Update now?" with Update Now / Later, matching R9Tools'
-    README-documented behavior ("Choosing 'Later' skips it for that session
-    without turning the setting off"). Call once per frame regardless of
-    which panel is active -- see shell.py's call site, placed the same way
-    titlebar.render(ctx) is.
+    """Check-on-launch prompt: "vX is available. Update now?" with
+    Update Now / Later -- Later skips it for the session without disabling
+    the setting. Call once per frame regardless of active panel.
     """
     theme = ctx.theme
     settings = ctx.state.settings
@@ -342,15 +304,10 @@ def render_auto_update_prompt(ctx: PanelContext) -> None:
 
 def render_update_flow_popup(ctx: PanelContext) -> None:
     """Global modal covering the rest of the update flow once a download has
-    actually started -- DOWNLOADING -> READY -> INSTALLING -- regardless of
-    which panel is active. Without this, only `_render_updates` (the
-    Settings-tab card) ever showed the Install button, so a user who started
-    a download and then switched tabs had no way back to it short of
-    manually returning to Settings. Driven off `settings.update_status`
-    itself (see _UPDATE_FLOW_STATUSES) rather than a flag set only by the
-    auto-prompt path, so this covers a download started via the Settings
-    card's own Check Now/Update button too. Call once per frame from
-    shell.py, same placement as render_auto_update_prompt.
+    started -- DOWNLOADING -> READY -> INSTALLING -- regardless of active
+    panel, so switching away from Settings mid-update doesn't strand the
+    user. Driven off `settings.update_status` (_UPDATE_FLOW_STATUSES), so it
+    covers both the auto-prompt and the Settings card's own button.
     """
     theme = ctx.theme
     settings = ctx.state.settings
@@ -364,9 +321,8 @@ def render_update_flow_popup(ctx: PanelContext) -> None:
     opened, _ = imgui.begin_popup_modal(_UPDATE_FLOW_POPUP_ID, None, flags)
     if opened:
         if not active:
-            # Status moved past this range (e.g. straight to ERROR) while
-            # the popup was still open from a prior frame -- close rather
-            # than render stale content.
+            # Status moved past this range (e.g. straight to ERROR) while the
+            # popup was still open -- close rather than render stale content.
             imgui.close_current_popup()
         elif settings.update_status == UpdateStatus.DOWNLOADING:
             imgui.text(f"Downloading v{settings.update_latest_version}...")
@@ -378,10 +334,8 @@ def render_update_flow_popup(ctx: PanelContext) -> None:
             widgets.muted_text(theme, "The app will close to finish installing.")
             imgui.spacing()
             if imgui.button("Install", imgui.ImVec2(140, 0)):
-                # Same install_and_quit() -> app_shall_exit sequence
-                # _on_update_button_clicked already uses for this exact
-                # status -- reused here rather than re-implemented, so
-                # there is exactly one place that owns this handoff.
+                # Reuses _on_update_button_clicked's install_and_quit()
+                # handoff rather than reimplementing it.
                 _on_update_button_clicked(UpdateStatus.READY)
         elif settings.update_status == UpdateStatus.INSTALLING:
             imgui.text("Installing -- the app will close shortly...")

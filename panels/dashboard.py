@@ -1,9 +1,6 @@
 """panels/dashboard.py -- landing screen: a bento-grid, at-a-glance overview
-of the live AppState. This is the first screen a user sees (app_state.py
-defaults `active_panel` to "dashboard"), so it's read-only by design and
-pulls every number directly off the same state the other panels edit --
-Profiles, Remapper, Macros, Window Select, Overlay -- rather than keeping
-any parallel/duplicate state of its own.
+of the live AppState. Read-only -- pulls every number directly off the same
+state the other panels edit, no duplicate state of its own.
 """
 
 from __future__ import annotations
@@ -16,8 +13,7 @@ from panel_context import PanelContext
 
 _GRID_GAP = 12.0
 # Tall enough for a wrapped 2-line sub-line (e.g. a long target exe name) --
-# a single-line-tight height plus wrapped text spawned a spurious vertical
-# scrollbar on this card, caught only by an actual screenshot (see report).
+# tighter and wrapped text spawns a spurious vertical scrollbar on the card.
 _STAT_CARD_HEIGHT = 128.0
 
 
@@ -27,8 +23,7 @@ def _stat_card(ctx: PanelContext, str_id: str, icon: str, label: str, value: str
         imgui.text_colored(theme.text_secondary, f"{icon}  {label.upper()}")
         imgui.spacing()
         # Wrapped, not plain text_colored -- these are narrow fixed-width
-        # grid cells (unlike other panels' full-width cards), and a longer
-        # target/process name would otherwise overflow past the card border.
+        # cells; a long value would otherwise overflow the card border.
         imgui.push_style_color(imgui.Col_.text, theme.text_primary)
         imgui.text_wrapped(value)
         imgui.pop_style_color()

@@ -41,16 +41,9 @@ def card(
     imgui.push_style_color(imgui.Col_.border, theme.border)
     size_v = imgui.ImVec2(*size) if size else imgui.ImVec2(0, 0)
     child_flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.always_use_window_padding
-    # A height of 0 is meant as "hug my content" (every caller that wants a
-    # fixed/scrollable height, e.g. window_select's 220px process list,
-    # passes a real nonzero height instead) -- but plain BeginChild with
-    # size.y == 0 actually means "fill the remaining space of the parent
-    # window", not "auto-size to content". Without auto_resize_y, a
-    # single-row card (e.g. one remap entry) silently stretched to fill the
-    # entire rest of its parent pane, which pushed the parent's own cursor
-    # past its available height by a few px and forced a spurious vertical
-    # scrollbar on the parent -- confirmed live (parent's imgui.get_scroll_max_y()
-    # was 0 before the card, >0 after) while chasing the sidebar nav bug.
+    # size.y == 0 means "fill remaining parent space" in plain BeginChild, not
+    # "auto-size to content" -- without auto_resize_y a single-row card
+    # stretches to fill the rest of its parent and forces a spurious scrollbar.
     if size_v.y == 0:
         child_flags |= imgui.ChildFlags_.auto_resize_y
     visible = imgui.begin_child(str_id, size_v, child_flags)
@@ -111,19 +104,12 @@ def labeled_toggle(
     reduce_motion: bool = False,
     tooltip: Optional[str] = None,
 ) -> Tuple[bool, bool]:
-    """Draw `[toggle switch]  Label` and return (changed, new_value).
-
-    State is conveyed by knob position (a spatial cue, not a color-only one)
-    plus the plain-text label placed after it -- so state is never carried
-    by color alone. An earlier version also drew literal 1/0 glyphs on the
-    knob (ToggleFlags_.a11y) as a belt-and-suspenders accessibility signal,
-    but that duplicated what position already conveys and looked like a
-    rendering artifact -- removed.
+    """Draw `[toggle switch]  Label` and return (changed, new_value). State
+    is conveyed by knob position plus the text label, never color alone.
     """
-    # Note: imgui_toggle.ToggleConstants exists in the bundled .pyi stub but
-    # is not actually exported by the compiled module at runtime (confirmed
-    # by introspection) -- 0.1s is that constant's own documented default,
-    # inlined here since there's nothing to import it from.
+    # imgui_toggle.ToggleConstants isn't exported at runtime despite being in
+    # the .pyi stub -- 0.1s is its documented default, inlined since it can't
+    # be imported.
     _DEFAULT_ANIMATION_DURATION = 0.1
 
     flags = imgui_toggle.ToggleFlags_.none
@@ -149,28 +135,19 @@ def labeled_toggle(
 def hex_color_picker(
     theme: Theme, str_id: str, label: str, rgba: Tuple[float, float, float, float]
 ) -> Tuple[bool, Tuple[float, float, float, float], bool]:
-    """A themed color swatch + label; clicking the swatch opens a popup with
-    a single large visual picker and one hex input field -- deliberately no
-    R/G/B number fields and no alpha/transparency control, since the default
-    ImGui color editor's RGB sliders + alpha bar are more than this app ever
-    needs. Also includes an explicit Close
-    button in the popup: Dear ImGui's default popup only dismisses on an
-    outside click, which wasn't discoverable enough on its own.
+    """A themed color swatch + label; clicking it opens a popup with one
+    visual picker and a hex field -- deliberately no RGB sliders or alpha
+    control, and an explicit Close button since the default popup only
+    dismisses on an outside click.
 
-    Callers still pass/receive a 4-tuple (alpha always forced to 1.0 on the
-    way out) rather than narrowing to RGB -- existing RGBA-typed consumers
-    (e.g. OverlayState.crosshair.color, hud_overlay.py's renderer) don't
-    need to change, this widget just never exposes the 4th channel.
+    Still passes/returns a 4-tuple (alpha forced to 1.0) so existing
+    RGBA-typed consumers don't need to change.
 
-    Returns (changed, rgba, committed). `changed` fires every frame the user
-    is actively dragging inside the picker (imgui.color_picker3's own
-    per-frame `picked` flag) -- callers that only want a live preview keep
-    using that, same as before. `committed` fires exactly once, the frame
-    the user releases the drag (imgui.is_item_deactivated_after_edit() on
-    the picker widget itself) -- this has to be checked here, immediately
-    after color_picker3, since by the time this function returns to its
-    caller the "last item" ImGui tracks is the Close button drawn below, not
-    the picker.
+    Returns (changed, rgba, committed). `changed` fires every dragged frame
+    (color_picker3's own `picked` flag); `committed` fires once, on release
+    (is_item_deactivated_after_edit()) -- must be checked right after
+    color_picker3, since the Close button drawn after it becomes the "last
+    item" otherwise.
     """
     imgui.push_id(str_id)
     swatch_col = imgui.ImVec4(rgba[0], rgba[1], rgba[2], 1.0)
@@ -244,13 +221,9 @@ _SCREEN_MARKER_SIZE = (26.0, 16.0)
 def screen_position_picker(
     theme: Theme, str_id: str, current: str, positions: tuple = SCREEN_POSITIONS
 ) -> str:
-    """Draws a small rounded-rect "monitor" with clickable position markers
-    inside it (one per entry in `positions`); returns the newly selected
-    position name (or `current` unchanged if nothing was clicked this
-    frame). Pass `SCREEN_POSITIONS` (6, the four corners + two middles) or
-    `SCREEN_POSITIONS_WITH_MIDDLES` (8, adds Top/Bottom Middle -- useful
-    where more granular placement matters, e.g. avoiding two badges
-    colliding)."""
+    """Small rounded-rect "monitor" with clickable position markers, one per
+    entry in `positions`. Returns the newly selected position, or `current`
+    if nothing was clicked this frame."""
     imgui.push_id(str_id)
     draw_list = imgui.get_window_draw_list()
     u32 = lambda rgba: imgui.color_convert_float4_to_u32(imgui.ImVec4(*rgba))  # noqa: E731
@@ -299,13 +272,11 @@ def screen_position_picker(
 
 
 def hyperlink(theme: Theme, label: str, url: str) -> None:
-    """Render `label` styled as a clickable hyperlink (accent color, hand
-    cursor, underline on hover) that opens `url` in the OS default browser
-    when clicked. Dear ImGui has no native hyperlink widget in this build --
-    this is a Selectable sized to its text (not the "fill available width"
-    -1 convention, which this imgui_bundle build takes literally rather than
-    as "fill width" -- see the module-level gotcha notes) and re-themed to
-    read as a link instead of a list row.
+    """Render `label` as a clickable hyperlink (accent color, hand cursor,
+    underline on hover) opening `url` in the OS browser. No native hyperlink
+    widget exists here, so this is a Selectable sized to its text (an
+    explicit width, not -1 -- see the imgui.selectable gotcha) re-themed to
+    read as a link.
     """
     text_width = imgui.calc_text_size(label).x
     imgui.push_style_color(imgui.Col_.text, theme.accent_text)

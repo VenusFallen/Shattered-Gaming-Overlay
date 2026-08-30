@@ -1,17 +1,8 @@
 """overlay_renderer.py -- DX11 2D geometry + text renderer for the HUD
 overlay.
 
-The first HUD overlay slice (the accessibility crosshair) was geometry-only
-by design -- this module's own docstring used to say so, and pointed at
-R9Tools' dx11_renderer.py as the place to port the GDI-backed text pipeline
-back in from once the Stats HUD / module status indicators were built. That
-text pipeline (GDI renders a string to an in-memory bitmap -> R8_UNORM D3D11
-texture -> SRV -> textured quad) is now ported in below, adapted only where
-this file's existing geometry pipeline needed matching additions (rounded
-rect fill/outline for the Stats box, used nowhere in R9Tools). Everything
-else in the GDI/text section (`_gdi_text_to_srv`, `_gdi_measure_text`, the
-text VS/PS shaders, `draw_text`/`measure_text`) is a straight port, not a
-redesign -- R9Tools already solved the GDI/DX11 interop.
+Text rendering: GDI renders a string to an in-memory bitmap, uploaded as an
+R8_UNORM D3D11 texture, sampled via SRV onto a textured quad.
 
 Builds on dx11_bridge.py. Provides:
   * Renderer -- manages shaders, blend state, constant buffers, vertex buffers
@@ -652,11 +643,8 @@ class Renderer:
 
     def _rounded_rect_points(self, x: float, y: float, w: float, h: float,
                               radius: float, segments_per_corner: int = 8) -> list:
-        """Perimeter points (clockwise) of an axis-aligned rounded rect,
-        used by both the filled (triangle-fan) and hollow (line-loop)
-        variants below -- no equivalent existed in R9Tools since it never
-        needed a rounded rect; this is new, built to match the style of the
-        existing draw_circle/draw_circle_filled helpers."""
+        """Perimeter points (clockwise) of an axis-aligned rounded rect, used
+        by both the filled (triangle-fan) and hollow (line-loop) variants."""
         r = max(0.0, min(radius, w * 0.5, h * 0.5))
         corners = [
             (x + w - r, y + r, 270.0, 360.0),  # top-right
@@ -732,8 +720,7 @@ class Renderer:
         self._pending_geom.append(_pack_geom_verts(*verts))
 
     # ------------------------------------------------------------------
-    # Text rendering (ported from R9Tools' dx11_renderer.py -- see module
-    # docstring)
+    # Text rendering
     # ------------------------------------------------------------------
 
     def measure_text(self, text: str, font_size: int = 14, font_face: str = "Segoe UI") -> tuple:
@@ -850,8 +837,7 @@ class Renderer:
 
 
 # ---------------------------------------------------------------------------
-# GDI text -> D3D11 R8_UNORM texture SRV (ported near-verbatim from R9Tools'
-# dx11_renderer.py -- see module docstring)
+# GDI text -> D3D11 R8_UNORM texture SRV
 # ---------------------------------------------------------------------------
 
 _gdi32 = ctypes.windll.gdi32

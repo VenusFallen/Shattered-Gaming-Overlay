@@ -1,48 +1,16 @@
 """updater.py -- self-update for Shattered Gaming Overlay against GitHub
-Releases.
+Releases: Check -> Download -> Install flow. Downloads the new release, then
+re-runs the installer silently in the background and lets the app close
+itself so the install can complete. Stdlib only (urllib, zipfile, json).
 
-Ported from R9Tools' `updater.py` (`D:\\Projects\\Python\\Testing\\R9Tools\\
-updater.py`): Check -> Update -> Install flow, matching R9Tools' pattern --
-download the new release, then re-run the installer silently in the
-background and let the app close itself so the install can complete. The
-network/download/installer-handoff functions below
-(`_fetch_release`, `_download_url`, `check_app_update`, `download_app`,
-`_quote_ps_single`, `_build_relaunch_command`, `launch_installer_and_quit`)
-are a close port of R9Tools' own -- that logic took real, hard-won iteration
-to get right there (see `launch_installer_and_quit`'s docstring below for
-the exact race it fixes), so this is deliberately "port and adapt", not
-"reinvent". Uses only the stdlib (urllib, zipfile, json) -- no extra
-dependencies, same as R9Tools.
+`repo_configured()` lets callers (panels/settings.py) tell "no repo
+configured" apart from "configured, just no releases yet" -- only the
+former should suppress the "View releases" link.
 
-What's different from R9Tools here:
-  - `_APP_REPO` now points at the real repo (`VenusFallen/Shattered-Gaming-
-    Overlay`), but no release has been published to it yet -- `check_app_update`
-    will correctly 404 until one exists. `repo_configured()` lets callers
-    (panels/settings.py) tell "no repo configured" apart from "repo configured,
-    just no releases yet"; only the former should suppress the "View releases"
-    link, since the latter is a completely normal, real, temporary state.
-  - `_ASSET_ZIP_PREFIX` / `_INSTALLER_EXE_NAME` below mirror R9Tools'
-    `R9Tools_v<version>.zip` containing `R9Tools_Setup.exe` naming convention --
-    confirm/adjust these once the real installer + release pipeline produces
-    its actual asset names.
-  - No Qt event loop / signals here (this app is Dear ImGui via
-    `imgui_bundle`/Hello ImGui, rendered once per frame, not an event-driven
-    Qt app) -- R9Tools hands background-thread results back to its UI via a
-    Qt Signal (auto-queued onto the main thread by PySide6). This project's
-    established equivalent, used by remapper.py/macro_engine.py/
-    hud_overlay.py, is a lock-guarded snapshot copied across the thread
-    boundary once per frame -- see `UpdateManager` below, whose `sync_to()`
-    is called from main.py's `_show_gui` exactly where those other engines'
-    own `update_snapshot()` calls already are.
-  - No `crash_logging.py` module exists in this project (R9Tools' installer
-    log path uses it) -- `_log_dir()` below picks a sensible
-    %LOCALAPPDATA%-based location directly instead of depending on a module
-    that doesn't exist here. If this project ever grows its own crash-log
-    module, point this at it instead of duplicating the convention.
-  - No AppMutex / Restart-Manager `CloseApplications=yes` wiring exists yet
-    either (that lives in the .iss installer script, which is out of scope
-    here) -- see `launch_installer_and_quit`'s docstring for what that means
-    for this port's safety margin.
+`UpdateManager` hands background-thread results back to the render loop via
+a lock-guarded snapshot (`sync_to()`, called from main.py's `_show_gui`),
+the same pattern remapper.py/macro_engine.py/hud_overlay.py use for their
+own `update_snapshot()`.
 """
 
 from __future__ import annotations
@@ -63,9 +31,8 @@ from pathlib import Path
 from typing import Optional
 import urllib.request
 
-# Guarded import, mirroring remapper.py's own pattern -- keeps this module
-# importable/unit-testable (e.g. from tests/ or a REPL) without pulling in
-# imgui_bundle or any other UI dependency; only needed here for a type hint.
+# Guarded import -- keeps this module importable without pulling in
+# imgui_bundle; only needed here for a type hint.
 try:  # pragma: no cover - only used for type hints
     from app_state import SettingsState, UpdateStatus
 except Exception:  # pragma: no cover
@@ -74,22 +41,12 @@ except Exception:  # pragma: no cover
 
 _log = logging.getLogger("shattered_overlay.updater")
 
-# ---------------------------------------------------------------------------
-# Placeholder repo/asset configuration -- see module docstring
-# ---------------------------------------------------------------------------
-
-# TODO(release): replace with the real GitHub "owner/repo" once a public
-# repository + Releases actually exist for Shattered Gaming Overlay. Left as
-# an obviously-fake placeholder on purpose rather than guessing at
-# "VenusFallen/Shattered-Gaming-Overlay" or similar.
+# Placeholder repo/asset configuration -- see module docstring.
 _APP_REPO = "VenusFallen/Shattered-Gaming-Overlay"
 _API = "https://api.github.com/repos/{repo}/releases/latest"
 
-# Placeholder asset-naming convention (no installer/ build exists yet --
-# that's separate, future packaging work). Mirrors
-# R9Tools' own "R9Tools_v<version>.zip containing R9Tools_Setup.exe"
-# convention with this project's name substituted in. Confirm/adjust once a
-# real installer + release pipeline exists.
+# TODO(release): confirm/adjust once the real installer + release pipeline
+# produces its actual asset names.
 _ASSET_ZIP_PREFIX = "ShatteredGamingOverlay_v"
 _INSTALLER_EXE_NAME = "ShatteredGamingOverlay_Setup.exe"
 
@@ -103,11 +60,6 @@ def repo_configured() -> bool:
 
 def releases_url() -> str:
     return f"https://github.com/{_APP_REPO}/releases"
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers (direct port of R9Tools' updater.py)
-# ---------------------------------------------------------------------------
 
 
 def _fetch_release(repo: str) -> dict:
@@ -144,13 +96,9 @@ def _download_url(url: str, progress_cb=None) -> bytes:
 
 
 def check_app_update(current_version: str) -> tuple[bool, str]:
-    """
-    Returns (update_available, latest_version_str).
-    Raises on network error (including "repo not configured yet" --
-    urlopen against the REPLACE_ME placeholder will fail DNS resolution,
-    which is the correct behavior: callers should surface that as a normal
-    check-failed error, not pretend it succeeded).
-    """
+    """Returns (update_available, latest_version_str). Raises on network
+    error -- including an unconfigured repo, which callers should surface as
+    a normal check-failed error."""
     data = _fetch_release(_APP_REPO)
     latest = data.get("tag_name", "").lstrip("v")
     cur = current_version.lstrip("v")
@@ -158,13 +106,8 @@ def check_app_update(current_version: str) -> tuple[bool, str]:
 
 
 def _find_zip_asset_url(data: dict) -> str:
-    """
-    Pick the release zip asset. Mirrors R9Tools' `_find_zip_asset_url`:
-    match on both the ``.zip`` extension and the expected name prefix so
-    this doesn't accidentally grab an unrelated asset if a release ever
-    ships more than one, falling back to any ``.zip`` if the naming
-    convention ever changes.
-    """
+    """Pick the release zip asset: match extension + expected name prefix
+    first (avoids grabbing an unrelated asset), fall back to any .zip."""
     assets = data.get("assets", [])
     prefix = _ASSET_ZIP_PREFIX.lower()
     for a in assets:
@@ -178,18 +121,10 @@ def _find_zip_asset_url(data: dict) -> str:
 
 
 def download_app(progress_cb=None) -> Path:
-    """
-    Download the latest release zip and extract the installer exe from it
-    into a fresh temp directory.
-
-    Only works when frozen (PyInstaller build). Raises otherwise -- this
-    project has no PyInstaller build yet either, so this will always raise
-    when run from source; that's expected, not a bug (see module docstring).
-
-    Returns the path to the extracted installer exe. Nothing is executed
-    here -- call launch_installer_and_quit() with the returned path once the
-    caller is ready to hand off to the installer.
-    """
+    """Download the latest release zip and extract the installer exe into a
+    fresh temp directory. Only works in a frozen (PyInstaller) build --
+    raises otherwise. Returns the extracted installer path; nothing is
+    executed here, call launch_installer_and_quit() with it separately."""
     if not getattr(sys, "frozen", False):
         raise RuntimeError("Self-update only works in the packaged exe")
 
@@ -214,30 +149,16 @@ def download_app(progress_cb=None) -> Path:
     return extracted_path
 
 
-# ---------------------------------------------------------------------------
-# Installer handoff (direct port of R9Tools' updater.py)
-# ---------------------------------------------------------------------------
-
-
 def _quote_ps_single(value: str) -> str:
-    """
-    Wrap ``value`` in single quotes for safe embedding in a PowerShell
-    -Command string, doubling any embedded single quotes (PowerShell's
-    single-quoted-string escape rule) so paths with apostrophes still
-    round-trip as one literal token.
-    """
+    """Wrap `value` in single quotes for a PowerShell -Command string,
+    doubling embedded single quotes per PowerShell's escape rule."""
     return "'" + str(value).replace("'", "''") + "'"
 
 
 def _build_relaunch_command(pid: int, installer_path: Path, install_args: list[str]) -> str:
-    """
-    Build the PowerShell -Command string that waits for the process ``pid``
-    to fully exit, then starts ``installer_path`` with ``install_args``.
-
-    Split out as its own pure function (no subprocess spawning), same as
-    R9Tools' version, so the generated command text can be unit-tested
-    directly without actually spawning anything.
-    """
+    """Build the PowerShell -Command string that waits for process `pid` to
+    fully exit, then starts `installer_path` with `install_args`. Pure
+    function (no subprocess spawning) so it's unit-testable directly."""
     arg_list = ", ".join(_quote_ps_single(a) for a in install_args)
     return (
         f"Wait-Process -Id {pid} -Timeout 10 -ErrorAction SilentlyContinue; "
@@ -247,25 +168,16 @@ def _build_relaunch_command(pid: int, installer_path: Path, install_args: list[s
 
 
 def _quote_cmdline_arg(value: str) -> str:
-    """
-    Quote ``value`` as a single Win32 command-line argument, following the
-    same rules `CommandLineToArgvW` uses to parse a command line back apart
-    (the rules `ShellExecuteExW`'s `lpParameters` is parsed with) -- NOT
-    `_quote_ps_single`'s PowerShell single-quoted-string rules above, which
-    operate one layer further in, inside a `-Command` string that has
-    already survived this outer layer intact.
+    """Quote `value` as a single Win32 command-line argument per the
+    `CommandLineToArgvW` parsing rules (what `ShellExecuteExW`'s
+    `lpParameters` is parsed with) -- a different layer than
+    `_quote_ps_single`'s PowerShell quoting above.
 
-    A run of N backslashes immediately followed by a literal `"` becomes
-    2N+1 backslashes then a `"` (escaping both the quote and every
-    backslash guarding it); a run of N backslashes at the very end of the
-    argument (immediately before the closing quote this function adds)
-    becomes 2N backslashes (escaping only themselves, since there's no
-    literal `"` after them to protect). This is the identical
-    Microsoft-documented algorithm CPython's own
-    `subprocess.list2cmdline` implements -- reproduced here rather than
-    imported from `subprocess` so this stays a small, pure, standalone
-    function usable with `ShellExecuteExW`'s single-string `lpParameters`
-    (subprocess's own version is only reachable via its argv-list APIs).
+    A run of N backslashes before a literal `"` becomes 2N+1 backslashes
+    then `"`; a run at the very end of the argument becomes 2N backslashes.
+    Same algorithm as `subprocess.list2cmdline`, reproduced here since that
+    one is only reachable via subprocess's argv-list APIs, not a single
+    `lpParameters` string.
     """
     if value and not any(c in value for c in ' \t\n\v"'):
         return value
@@ -288,18 +200,15 @@ def _quote_cmdline_arg(value: str) -> str:
 
 
 def _build_shell_execute_parameters(ps_command: str) -> str:
-    """
-    Build the single `lpParameters` string `ShellExecuteExW` expects for
-    launching ``powershell.exe -NoProfile -NonInteractive -ExecutionPolicy
-    Bypass -WindowStyle Hidden -Command <ps_command>``.
+    """Build the `lpParameters` string `ShellExecuteExW` expects for
+    launching `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy
+    Bypass -WindowStyle Hidden -Command <ps_command>`.
 
     `lpParameters` is one raw command-line string parsed by
-    `CommandLineToArgvW`, not the argv list the old `subprocess.Popen` call
-    used -- each argument (including ``ps_command`` itself, which already
-    contains its own inner PowerShell single-quoting from
-    `_build_relaunch_command`/`_quote_ps_single`) is quoted independently
-    via `_quote_cmdline_arg` so this outer layer can't corrupt anything
-    `_build_relaunch_command` already produced.
+    `CommandLineToArgvW`, not an argv list -- each argument (including
+    `ps_command`, which already carries its own inner PowerShell quoting) is
+    quoted independently via `_quote_cmdline_arg` so this outer layer can't
+    corrupt what `_build_relaunch_command` already produced.
     """
     args = [
         "-NoProfile",
@@ -311,18 +220,10 @@ def _build_shell_execute_parameters(ps_command: str) -> str:
     return " ".join(_quote_cmdline_arg(a) for a in args)
 
 
-# ---------------------------------------------------------------------------
 # ShellExecuteExW ("runas") bindings -- see launch_installer_and_quit()'s
-# docstring for why elevation is triggered here instead of via a
+# docstring for why elevation is triggered here rather than via a
 # subprocess.Popen'd watcher. Raw ctypes, no pywin32, matching this
-# project's established convention (tray_icon.py, titlebar.py,
-# window_select.py). Declared at module scope, same as window_select.py's
-# own user32/dwmapi bindings, rather than gated behind an
-# `if sys.platform == "win32"` import guard -- this project's Win32-backed
-# modules already assume a Windows host to import cleanly (see
-# window_select.py), so matching that precedent here rather than inventing
-# a new one.
-# ---------------------------------------------------------------------------
+# project's convention elsewhere (tray_icon.py, titlebar.py, window_select.py).
 
 _SW_HIDE = 0
 
@@ -355,12 +256,9 @@ if sys.platform == "win32":
 
 
 def _shell_execute_runas(lpFile: str, lpParameters: str) -> None:
-    """
-    Launch ``lpFile`` elevated (UAC "runas" verb) via `ShellExecuteExW`,
-    called from this (still-alive, foreground, interactive) process. Raises
-    OSError on failure, mirroring how a failed `subprocess.Popen` call would
-    have surfaced to `launch_installer_and_quit`'s caller.
-    """
+    """Launch `lpFile` elevated (UAC "runas" verb) via `ShellExecuteExW`,
+    called from this still-alive, foreground, interactive process. Raises
+    OSError on failure."""
     info = _SHELLEXECUTEINFOW()
     info.cbSize = ctypes.sizeof(_SHELLEXECUTEINFOW)
     info.fMask = 0
@@ -385,78 +283,51 @@ def _shell_execute_runas(lpFile: str, lpParameters: str) -> None:
 
 
 def _log_dir() -> Path:
-    """%LOCALAPPDATA%\\Shattered Gaming Overlay\\logs -- this project has no
-    crash_logging.py module (unlike R9Tools) to source this path from, so it
-    is picked directly here instead of inventing a dependency on a module
-    that doesn't exist. If a real crash-log module is ever added, point this
-    at it instead."""
+    """%LOCALAPPDATA%\\Shattered Gaming Overlay\\logs."""
     base = os.getenv("LOCALAPPDATA") or tempfile.gettempdir()
     return Path(base) / "Shattered Gaming Overlay" / "logs"
 
 
 def launch_installer_and_quit(installer_path: Path) -> None:
-    """
-    Hand off to the extracted installer, then return so the caller can quit
-    the app.
+    """Hand off to the extracted installer, then return so the caller can
+    quit the app.
 
-    This does NOT launch the installer directly. It elevates and starts a
-    detached PowerShell watcher that first runs ``Wait-Process -Id <this
-    pid>`` (captured via os.getpid() before any quitting happens, with a 10s
-    safety-net timeout) and only starts the installer once that resolves --
-    i.e. once this process has actually, fully terminated, not merely been
-    asked to quit.
+    Does NOT launch the installer directly. Elevates and starts a detached
+    PowerShell watcher that runs `Wait-Process -Id <this pid>` (10s
+    safety-net timeout) and only starts the installer once this process has
+    actually, fully terminated -- not merely been asked to quit. Without
+    this, the installer's file-copy step can race this process's own
+    exe/dll file lock releasing; Inno Setup's own `AppMutex` check can abort
+    within milliseconds of launch, faster than a Restart-Manager-mediated
+    close-and-wait can complete. Guaranteeing real process death before the
+    installer starts removes the race entirely.
 
-    Why the Wait-Process watcher exists at all (ported verbatim from
-    R9Tools' own hard-won fix -- see its updater.py): a naive version of
-    this raced an installer's file-copy step against this process's own
-    file lock on its exe/dlls actually releasing. R9Tools originally tried
-    to close that race with only its own Inno-Setup-side
-    `CloseApplications=yes` + `AppMutex` (Restart Manager closing the app),
-    and a real failed-update install log showed that assumption was wrong
-    -- the installer's own AppMutex check can abort within milliseconds of
-    launch, faster than a Restart-Manager-mediated close-and-wait can
-    complete. Guaranteeing real process death before the installer even
-    starts (this watcher) removes the race entirely instead of trying to
-    win it.
+    The watcher is launched via `ShellExecuteExW("runas", ...)` rather than
+    `subprocess.Popen` because the installed app requires admin elevation
+    (PresentMon's FPS tracking needs an elevated ETW session), and a
+    non-elevated, detached PowerShell watcher trying to `Start-Process` an
+    admin-manifested installer fails silently -- confirmed live: the UAC
+    `consent.exe` process appears but the prompt never reaches the
+    interactive desktop. `ShellExecuteExW`'s `runas` verb, called while this
+    process is still alive and owns a foreground GUI window, is the same
+    mechanism Explorer's "Run as administrator" uses and reliably surfaces
+    the UAC dialog. Once approved, the resulting PowerShell process is
+    already elevated, so its later `Start-Process` on the installer inherits
+    that with no second prompt.
 
-    Why the watcher is launched via `ShellExecuteExW("runas", ...)` instead
-    of a plain `subprocess.Popen`: since v1.1.3/1.1.4 the installed app (and
-    its installer) require admin elevation (PresentMon's FPS tracking needs
-    an elevated ETW trace session -- see ShatteredGamingOverlay.spec/.iss).
-    A `subprocess.Popen`'d, non-elevated PowerShell watcher trying to
-    `Start-Process` an admin-manifested installer forces Windows to broker a
-    UAC prompt from deep inside a detached, no-window, job-broken-away
-    background process -- confirmed live to fail silently (the UAC
-    `consent.exe` process appears but the prompt never reaches the user's
-    interactive desktop, the installer never runs, and nothing is left
-    hung). `ShellExecuteExW`'s `runas` verb, called here, while this process
-    is still alive and still owns a normal foreground GUI window, is the
-    same mechanism Explorer's own "Run as administrator" uses and reliably
-    surfaces the UAC dialog on the correct interactive session. Once the
-    user approves that one prompt, the resulting PowerShell process is
-    already elevated, so its own later `Start-Process` on the installer
-    inherits that elevation with no second prompt.
+    The caller must still make the app quit immediately after this returns
+    (e.g. `hi.get_runner_params().app_shall_exit = True`) -- that's what the
+    watcher is waiting on.
 
-    The caller should still make the app quit (e.g.
-    `hi.get_runner_params().app_shall_exit = True`, mirroring titlebar.py's
-    own close path) immediately after this returns -- that's what the
-    watcher above is waiting on.
+    Install flags (Inno Setup silent-install switches):
+      /VERYSILENT       - no wizard UI
+      /SUPPRESSMSGBOXES - suppress informational message boxes
+      /NORESTART        - never prompt for or force a reboot
+      /LOG=<path>       - write an install log to
+                          %LOCALAPPDATA%\\Shattered Gaming Overlay\\logs
 
-    Flags (Inno Setup command-line silent-install switches -- same as
-    R9Tools; assumes the eventual installer is also Inno-Setup-based, since
-    that's this repo's only installer precedent to go on):
-      /VERYSILENT          - no wizard UI at all
-      /SUPPRESSMSGBOXES    - suppress informational message boxes
-      /NORESTART            - never prompt for or force a reboot
-      /LOG=<path>            - write a full Inno Setup install log to
-                              %LOCALAPPDATA%\\Shattered Gaming Overlay\\logs
-                              so a silent update attempt (successful or not)
-                              leaves a real diagnostic trail
-
-    The PowerShell watcher itself still runs hidden (`-WindowStyle Hidden`
-    plus `ShellExecuteExW`'s own `nShow=SW_HIDE`) and detached -- only the
-    OS-owned UAC consent dialog is ever shown to the user; the installer it
-    eventually launches via `Start-Process` inherits that same
+    The watcher runs hidden and detached -- only the OS-owned UAC dialog is
+    ever shown; the installer it launches inherits that same
     detachment/elevation.
     """
     if sys.platform != "win32":
@@ -489,13 +360,9 @@ def launch_installer_and_quit(installer_path: Path) -> None:
     _shell_execute_runas("powershell.exe", lp_parameters)
 
 
-# ---------------------------------------------------------------------------
-# UpdateManager -- the stateful, thread-safe orchestration R9Tools got for
-# free from Qt Signals (see module docstring). Mirrors remapper.py/
-# hud_overlay.py's "module owns a singleton, background work stays behind a
-# lock, the render thread only ever calls a documented thread-safe method"
-# pattern used everywhere else in this project.
-# ---------------------------------------------------------------------------
+# UpdateManager -- stateful, thread-safe orchestration. Mirrors
+# remapper.py/hud_overlay.py's "singleton owns background work behind a
+# lock, render thread only calls documented thread-safe methods" pattern.
 
 
 @dataclass
@@ -511,20 +378,16 @@ class _Status:
 class UpdateManager:
     """Owns the Companion window's self-update background work.
 
-    Public API (all safe to call from the Companion window's own/render
-    thread):
+    Public API (safe to call from the render thread):
         start_check(current_version, is_automatic=False)
         start_download()
         install_and_quit() -> bool
         dismiss_auto_prompt()
         sync_to(settings)
 
-    Everything else (the actual network calls) runs on short-lived daemon
-    threads spawned here -- never call check_app_update()/download_app()
-    directly from the render thread, exactly like remapper.py's warning
-    about never reading engine-owned state off the wrong thread, just
-    inverted (here it's *writes* from a background thread that must go
-    through the lock instead of touching AppState directly).
+    The actual network calls run on short-lived daemon threads spawned
+    here -- never call check_app_update()/download_app() directly from the
+    render thread.
     """
 
     def __init__(self) -> None:
@@ -588,8 +451,7 @@ class UpdateManager:
 
     def _do_download(self) -> None:
         if not getattr(sys, "frozen", False):
-            # Mirrors R9Tools' "Dev build -- skipped" UX: a real, expected
-            # state (this app has no PyInstaller build yet), not an error.
+            # Dev build -- a real, expected state, not an error.
             with self._lock:
                 self._status = UpdateStatus.ERROR
                 self._error_message = "Update install only works in a packaged build, not from source"
@@ -615,12 +477,10 @@ class UpdateManager:
 
     def install_and_quit(self) -> bool:
         """Hands off to the extracted installer. Returns True if the caller
-        should now quit the app -- the caller (panels/settings.py) is
-        expected to immediately follow a True return with
-        `hi.get_runner_params().app_shall_exit = True`, the exact same
-        mechanism titlebar.py's own close button uses, so the normal
-        before_exit teardown still runs. Returns False (recording an error)
-        without asking the caller to quit if the handoff itself fails."""
+        should now quit the app -- the caller is expected to immediately
+        follow a True return with `hi.get_runner_params().app_shall_exit =
+        True` so normal before_exit teardown still runs. Returns False
+        (recording an error) if the handoff itself fails."""
         with self._lock:
             path = self._installer_path
         if path is None:
@@ -642,8 +502,7 @@ class UpdateManager:
 
     def dismiss_auto_prompt(self) -> None:
         """'Later' on the automatic check-on-launch prompt -- a session-only
-        skip; never touches SettingsState.check_for_updates_on_launch (per
-        R9Tools' README-documented behavior)."""
+        skip; never touches SettingsState.check_for_updates_on_launch."""
         with self._lock:
             self._auto_prompt_pending = False
 
@@ -652,13 +511,11 @@ class UpdateManager:
     # ------------------------------------------------------------------
 
     def sync_to(self, settings: "SettingsState") -> None:
-        """Call once per Companion-window frame, before the frame is
-        rendered (see main.py's `_show_gui`, right alongside
-        remapper_engine.update_snapshot()/macro_engine's own equivalents --
-        those copy AppState *into* the engine; this copies the engine's
-        result *out* into AppState, same lock-guarded-snapshot pattern,
-        opposite direction). Never mutate AppState.settings' update_* fields
-        from anywhere else."""
+        """Call once per Companion-window frame, before render. Opposite
+        direction from remapper_engine.update_snapshot() (copies the
+        engine's result out into AppState instead of in) but the same
+        lock-guarded-snapshot pattern. Never mutate AppState.settings'
+        update_* fields from anywhere else."""
         with self._lock:
             settings.update_status = self._status
             settings.update_latest_version = self._latest_version
@@ -668,10 +525,6 @@ class UpdateManager:
             settings.auto_update_prompt_pending = self._auto_prompt_pending
 
 
-# ---------------------------------------------------------------------------
 # Process-wide singleton -- main.py drives this alongside the Companion
-# window's own lifecycle, same pattern as remapper_engine/macro_engine/
-# hud_overlay.
-# ---------------------------------------------------------------------------
-
+# window's lifecycle, same pattern as remapper_engine/macro_engine/hud_overlay.
 update_manager = UpdateManager()

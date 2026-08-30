@@ -35,9 +35,8 @@ def render(ctx: PanelContext) -> None:
     if not can_create:
         imgui.begin_disabled()
     if imgui.button(f"{fa.ICON_FA_PLUS}  Create Profile"):
-        # Snapshots the CURRENT live Remapper/Macros/Window Select state
-        # into a brand-new profile and makes it active (a "Save As" flow) --
-        # see profiles_engine.create_profile_from_current's docstring.
+        # Snapshots the current live state into a new profile and activates
+        # it -- a "Save As" flow.
         if profiles_engine.create_profile_from_current(ctx.state, state.new_profile_draft.strip()) is not None:
             state.new_profile_draft = ""
     if not can_create:
@@ -99,10 +98,9 @@ def render(ctx: PanelContext) -> None:
                 theme, "Window Select", profile.persist_window_select, ctx.state.settings.reduce_motion
             )
             if changed_r or changed_m or changed_w:
-                # Persist the flag change itself immediately (metadata only,
-                # doesn't touch this or any other profile's saved payload) --
-                # otherwise it's silently lost if the app closes before the
-                # next Save/Load/Create/Delete on any profile.
+                # Persist the flag change immediately (metadata only) --
+                # otherwise it's lost if the app closes before the next
+                # Save/Load/Create/Delete.
                 profiles_engine.sync_metadata(ctx.state)
 
             imgui.pop_id()

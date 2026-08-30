@@ -1,11 +1,8 @@
 """shell.py -- Companion window nav shell: sidebar + content dispatch.
 
-This is the single `show_gui` callback root: main.py points Hello ImGui's
-`RunnerParams.callbacks.show_gui` at `render_frame()`. Hello ImGui already
-wraps the callback in one full-viewport ImGui window (see
-ImGuiWindowParams.default_imgui_window_type = provide_full_screen_window in
-main.py), so everything below draws directly onto that single canvas --
-sidebar on the left, the active panel's content on the right.
+Single `show_gui` root (main.py wires `render_frame` to
+`RunnerParams.callbacks.show_gui`); Hello ImGui already wraps it in one
+full-viewport window, so sidebar and active panel share one canvas.
 """
 
 from __future__ import annotations
@@ -23,11 +20,9 @@ from panels import about, dashboard, macros, overlay, profiles, remapper, settin
 
 _SIDEBAR_WIDTH = 220.0
 
-# (panel key, icon, display label) -- order is the nav order. Dashboard is
-# first: it's the landing screen (see app_state.AppState.active_panel).
-# Window Select is no longer a standalone tab -- it's folded into Settings
-# as a card (see panels/window_select.py::render_section, called from
-# panels/settings.py).
+# (panel key, icon, label) -- nav order. Dashboard is the landing screen
+# (see AppState.active_panel). Window Select lives inside Settings as a
+# card now, not its own tab (panels/window_select.py::render_section).
 _NAV_ITEMS = (
     ("dashboard", fa.ICON_FA_TACHOMETER_ALT, "Dashboard"),
     ("overlay", fa.ICON_FA_CROSSHAIRS, "Overlay"),
@@ -62,15 +57,8 @@ def _render_sidebar(ctx: PanelContext) -> None:
     imgui.separator()
     imgui.spacing()
 
-    # NOTE: imgui.selectable's `size` does NOT support the classic Dear ImGui
-    # "negative x = fill available width" convention in this imgui_bundle
-    # build -- a literal ImVec2(-1, h) is taken at face value and produces a
-    # ~7px-wide selectable (confirmed by an isolated repro: item_rect width
-    # was 7.0 regardless of label length, vs. ~212 once an explicit positive
-    # width is passed). That tiny width clipped away all 6 rows' icon+label
-    # text and their hit-test area down to a sliver, which is what looked
-    # like "one malformed row + an empty sidebar" on screen. Fix: compute the
-    # actual available width once and pass it explicitly.
+    # imgui.selectable's size doesn't honor "-1 = fill width" in this
+    # imgui_bundle build -- pass an explicit width or rows collapse to ~7px.
     row_width = imgui.get_content_region_avail().x
 
     for key, icon, label in _NAV_ITEMS:
@@ -89,17 +77,14 @@ def _render_sidebar(ctx: PanelContext) -> None:
 
 def render_frame(state: AppState) -> None:
     """Called once per frame by Hello ImGui (see main.py)."""
-    # NOTE: deliberately not named `settings` -- panels/settings.py is
-    # already imported into this module's namespace under that name (see
-    # the `settings.render_auto_update_prompt(ctx)` call below), and a local
-    # `settings` here would silently shadow that module reference.
+    # Named app_settings, not settings -- the settings module is imported
+    # under that name below (settings.render_auto_update_prompt) and would
+    # be shadowed.
     app_settings = state.settings
     if app_settings.theme_name == "color_cycle":
-        # Advance the animation clock here, not inside theme.py --
-        # apply_theme()/resolve_color_cycle_theme() stay non-time-aware, this
-        # is the one call site that owns "what time is it". Reduce Motion
-        # freezes the effect by simply not advancing cycle_elapsed_sec, so
-        # the resolved color holds at whatever it was on last unfrozen.
+        # Clock lives here, not in theme.py -- apply_theme/resolve_color_cycle_theme
+        # stay time-agnostic. Reduce Motion freezes the effect by just not
+        # advancing cycle_elapsed_sec.
         if not app_settings.reduce_motion:
             app_settings.cycle_elapsed_sec += imgui.get_io().delta_time
         theme = theme_module.resolve_color_cycle_theme(
@@ -111,25 +96,16 @@ def render_frame(state: AppState) -> None:
     else:
         theme = theme_module.get_theme(app_settings.theme_name)
     theme_module.apply_theme(theme)
-    # Hand the resolved theme (including any live Color Cycle instant) off
-    # to the HUD overlay's render thread -- see hud_overlay.py's
-    # update_theme() docstring for why this is the one call site that
-    # reaches it (this function is the only place that actually resolves
-    # Color Cycle to a real Theme each frame).
+    # This is the one call site that resolves Color Cycle to a real Theme
+    # each frame, so it's also the one that hands it to the HUD render thread.
     hud_overlay.update_theme(theme)
 
     ctx = PanelContext(state=state, theme=theme, capture=capture_service)
 
     titlebar.render(ctx)
-    # Automatic check-on-launch prompt (see updater.py / panels/settings.py's
-    # render_auto_update_prompt docstring) -- drawn unconditionally every
-    # frame, same as titlebar.render(ctx) just above, so it can show
-    # regardless of which panel is currently active.
+    # Drawn unconditionally every frame, independent of active panel, so the
+    # update prompt/flow can surface without navigating to Settings.
     settings.render_auto_update_prompt(ctx)
-    # Covers the rest of the flow (download progress -> Install -> closing)
-    # once a download has actually started, from either origin -- see
-    # render_update_flow_popup's docstring -- so the user is never stranded
-    # needing to navigate back to Settings to finish an update in progress.
     settings.render_update_flow_popup(ctx)
 
     _render_sidebar(ctx)

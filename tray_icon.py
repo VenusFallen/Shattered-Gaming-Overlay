@@ -1,49 +1,24 @@
 """tray_icon.py -- system tray icon for the Companion window's
 minimize-to-tray behavior.
 
-Companion-window-only concern: this has nothing to do with the HUD overlay
-(hud_overlay.py) and must never touch it -- the HUD overlay keeps
-rendering/staying hidden purely per its own per-element enable toggles,
-regardless of whether the Companion window is shown, minimized, or hidden to
-tray (see hud_overlay.py's module docstring). This module only ever calls
-Win32 APIs against the Companion window's own HWND and its own tray-icon
-message window.
+Companion-window-only concern; must never touch the HUD overlay, which
+renders purely off its own per-element toggles regardless of tray state.
+Only calls Win32 APIs against the Companion window's own HWND and this
+module's own hidden tray-icon message window.
 
-Same "own background thread + plain Win32 via ctypes" pattern as
-window_select.py's focus-tracking thread and hud_overlay.py's render thread
--- no pywin32 (win32gui/win32api) despite it being in requirements.txt for
-other reasons; nothing else in this codebase actually imports it either, so
-raw ctypes bindings stay the one established pattern for Win32 calls here.
+Own background thread + raw ctypes Win32 calls (no pywin32), same pattern as
+hud_overlay.py's render thread. Runs a never-shown hidden window purely to
+receive the Shell_NotifyIcon callback and popup-menu WM_COMMAND.
 
-Runs its own message-only-style hidden window (RegisterClassW/
-CreateWindowExW, same shape as hud_overlay.py's window creation) purely to
-receive the Shell_NotifyIcon callback message and the popup menu's
-WM_COMMAND -- it is never shown, never sized, and never receives real user
-input from anywhere other than the tray icon itself.
+Uses the classic (pre-NOTIFYICON_VERSION_4) callback shape deliberately --
+`uCallbackMessage`'s lParam is the raw mouse message rather than v4's packed
+icon-id-plus-message form. Simpler and sufficient for a two-item menu.
 
-Deliberately uses the classic (pre-NOTIFYICON_VERSION_4) callback shape --
-`Shell_NotifyIconW`'s `uCallbackMessage` lParam is the raw mouse message
-(WM_RBUTTONUP / WM_LBUTTONDBLCLK) rather than version 4's packed
-icon-id-plus-message form. Version 4 also changes single-click/right-click
-semantics in ways that are harder to reason about without live testing
-(no GUI available in this environment -- see this module's own header
-comment in the task that produced it); the classic shape is simpler, still
-fully supported on modern Windows, and enough for a two-item menu.
-
-Public API
-----------
-`tray_icon.start()`   -- create the tray icon + its message-pump thread.
-`tray_icon.stop()`    -- remove the tray icon and tear the thread down.
-`tray_icon.is_running()` -- whether the tray icon is currently live.
+Public API: start(), stop(), is_running().
 
 Quit goes through the same `RunnerParams.app_shall_exit` flag titlebar.py's
-`_close()` uses, so the normal shutdown path (main.py's `before_exit`
-callback -- tearing down hooks, the HUD overlay, the stats poller, this
-module's own thread, etc.) still runs, same as a normal titlebar close. This
-is a direct cross-thread bool assignment rather than a lock-guarded snapshot
--- consistent with `HudOverlay._running`'s own bare bool flag (set from the
-main thread, read from the render thread, no lock) elsewhere in this
-codebase: a single bool write needs nothing heavier.
+`_close()` uses, so the normal shutdown path still runs instead of killing
+the process out from under it.
 """
 
 from __future__ import annotations
@@ -174,10 +149,9 @@ class _NOTIFYICONDATAW(ctypes.Structure):
 _shell32.Shell_NotifyIconW.argtypes = (wintypes.DWORD, ctypes.POINTER(_NOTIFYICONDATAW))
 _shell32.Shell_NotifyIconW.restype = wintypes.BOOL
 
-# Explicit signatures for every call that returns or receives an HWND/HICON/
-# HMENU handle -- same rigor titlebar.py uses for its own Companion-HWND
-# calls, since ctypes' un-annotated argument guessing (plain c_int) can
-# silently mishandle a 64-bit handle value.
+# Explicit signatures for every HWND/HICON/HMENU-returning or -receiving
+# call -- ctypes' un-annotated guessing (plain c_int) can mishandle a
+# 64-bit handle value.
 _user32.FindWindowW.restype = wintypes.HWND
 _user32.FindWindowW.argtypes = (wintypes.LPCWSTR, wintypes.LPCWSTR)
 _user32.IsIconic.restype = wintypes.BOOL
@@ -204,11 +178,9 @@ _user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
 
 
 def _companion_hwnd() -> int:
-    """Look the Companion window up by its exact title, same fallback
-    `FindWindowW` path titlebar.py uses -- NOT `GetActiveWindow`, which is
-    scoped to the *calling thread's* message queue and would always return 0
-    here since this module's calls all come from the tray icon's own
-    background thread, never the Companion window's own GUI thread."""
+    """Look the Companion window up by title, not `GetActiveWindow` -- that's
+    scoped to the calling thread's message queue and would always return 0
+    here since calls come from the tray icon's own background thread."""
     return _user32.FindWindowW(None, WINDOW_TITLE)
 
 
@@ -302,9 +274,8 @@ class TrayIcon:
         return _DefWindowProcW(hwnd, msg, wparam, lparam)
 
     def _quit(self) -> None:
-        # Same exit flag titlebar.py's own Close button sets -- lets the
-        # normal Hello ImGui shutdown path (main.py's before_exit callback)
-        # run instead of killing the process out from under it.
+        # Same exit flag titlebar.py's Close button sets, so the normal
+        # shutdown path runs instead of killing the process outright.
         try:
             from imgui_bundle import hello_imgui as hi
             hi.get_runner_params().app_shall_exit = True
@@ -325,17 +296,10 @@ class TrayIcon:
             pt = wintypes.POINT()
             _user32.GetCursorPos(ctypes.byref(pt))
 
-            # Classic dance so the popup dismisses correctly when the user
-            # clicks away from it (documented Shell_NotifyIcon/TrackPopupMenu
-            # requirement, not optional flourish): the tray window must be
-            # brought to the foreground before TrackPopupMenu, and sent a
-            # harmless WM_NULL right after so its own message queue doesn't
-            # get stuck thinking the menu is still the active popup owner.
-            # TPM_NONOTIFY is deliberately NOT passed here -- that flag
-            # suppresses the WM_COMMAND this window's _wnd_proc relies on to
-            # learn which item was picked (it only makes sense paired with
-            # TPM_RETURNCMD, which reads the choice off TrackPopupMenu's own
-            # return value instead -- not used here).
+            # Documented Shell_NotifyIcon/TrackPopupMenu requirement: bring
+            # the tray window to foreground before TrackPopupMenu, then post
+            # a harmless WM_NULL so the popup dismisses correctly. No
+            # TPM_NONOTIFY -- _wnd_proc needs the resulting WM_COMMAND.
             _user32.SetForegroundWindow(self._hwnd)
             _user32.TrackPopupMenu(hmenu, _TPM_RIGHTBUTTON, pt.x, pt.y, 0, self._hwnd, None)
             _user32.PostMessageW(self._hwnd, _WM_NULL, 0, 0)
@@ -354,11 +318,10 @@ class TrayIcon:
 
         _user32.RegisterClassW(ctypes.byref(wc))
 
-        # Never shown -- this window exists only to own a message queue for
-        # the Shell_NotifyIcon callback + popup menu, same idea as a
-        # message-only window (HWND_MESSAGE isn't used here since
+        # Never shown -- exists only to own a message queue for the
+        # Shell_NotifyIcon callback + popup menu. Not HWND_MESSAGE:
         # TrackPopupMenu/SetForegroundWindow behave more predictably against
-        # an ordinary, if invisible, top-level window).
+        # an ordinary, if invisible, top-level window.
         hwnd = _user32.CreateWindowExW(
             0, self._CLASS_NAME, "SGO Tray", _WS_OVERLAPPED,
             0, 0, 0, 0, None, None, hinstance, None,
@@ -418,9 +381,7 @@ class TrayIcon:
 
 # ---------------------------------------------------------------------------
 # Process-wide singleton -- main.py starts/stops this alongside the
-# Companion window's own lifecycle (see main.py's _post_init/_before_exit),
-# same pattern as hud_overlay.hud_overlay / stats_poller's module-level
-# instance.
+# Companion window's own lifecycle.
 # ---------------------------------------------------------------------------
 
 tray_icon = TrayIcon()

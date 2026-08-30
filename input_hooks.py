@@ -1,17 +1,10 @@
-"""
-input_hooks.py -- pure user-mode input capture for Shattered Gaming Overlay.
+"""input_hooks.py -- pure user-mode input capture via
+`SetWindowsHookEx(WH_KEYBOARD_LL / WH_MOUSE_LL)`. No driver, no ViGEm, no
+game-process access.
 
-Wraps `SetWindowsHookEx(WH_KEYBOARD_LL / WH_MOUSE_LL, ...)` via `ctypes`.
-Deliberately dependency-free (no third-party hook library) so both the
-future overlay and future capture/bind-UI code can import this cleanly.
-No driver, no ViGEm, no game-process access -- keeping to the project's
-hard rule against any of that.
-
-Public API
-----------
-`HookManager` -- install the hooks, pump the Win32 message loop on its own
-thread, and dispatch typed dataclass events (`KeyEvent`, `MouseButtonEvent`,
-`MouseMoveEvent`, `MouseScrollEvent`) to registered callbacks.
+`HookManager` installs the hooks, pumps the Win32 message loop on its own
+thread, and dispatches typed events (`KeyEvent`, `MouseButtonEvent`,
+`MouseMoveEvent`, `MouseScrollEvent`) to registered callbacks:
 
     hm = HookManager()
     hm.on_key_down(lambda e: print(e))
@@ -19,43 +12,19 @@ thread, and dispatch typed dataclass events (`KeyEvent`, `MouseButtonEvent`,
     ...
     hm.stop()
 
-Injected-input detection
--------------------------
-Every event carries two independent flags:
+Each event carries `injected` (Windows' LLKHF_INJECTED/LLMHF_INJECTED bit --
+true for any synthetic input) and `from_self` (true only for input we
+injected via `input_inject.py`, matched by dwExtraInfo). Consumers should key
+off `from_self` to avoid feedback loops on their own re-injected events while
+still treating other injected input as a legitimate trigger.
 
-- `injected`  -- Windows' own LLKHF_INJECTED / LLMHF_INJECTED bit: true for
-  *any* synthetic input, from us, from the Windows On-Screen Keyboard, from
-  another accessibility tool, from anything.
-- `from_self` -- true only when the event's dwExtraInfo matches
-  `input_inject.INJECTED_MARKER`, i.e. it was produced by *our own*
-  `input_inject.py`.
+Observe-only by default: CallNextHookEx always runs. A callback returning
+`True` suppresses the event -- exposed for the remapper, not used here.
 
-The remapper/macro engine built on top of this should key off `from_self`
-to avoid feedback loops on its own re-injected events, while still treating
-other injected input (e.g. an accessibility user's on-screen keyboard) as a
-legitimate trigger. Filtering on the blunter `injected` flag would break
-that.
-
-Suppression
-------------
-By design this layer is observe-only by default: it always calls
-CallNextHookEx and lets the event through. A registered callback may
-return `True` to suppress the event (stop it from reaching the rest of
-the system) -- this is intentionally exposed now because the remapper
-that gets built on top of this module will need it (to swallow the
-original key of a remap), not because this module itself implements
-remapping. With no callbacks, or callbacks that return None/False, nothing
-is ever blocked.
-
-Threading / timing gotcha
---------------------------
-`WH_KEYBOARD_LL`/`WH_MOUSE_LL` callbacks run on the thread that installed
-them, driven by that thread's message pump, and are subject to Windows'
-low-level-hook responsiveness timeout: a callback that blocks or does
-slow work can make Windows treat the hook as unresponsive, causing
-system-wide input lag or the hook silently getting removed. Keep
-registered callbacks fast and non-blocking; hand off real work to a
-queue/other thread.
+Callbacks run on the hook-owning thread and are subject to Windows'
+low-level-hook responsiveness timeout: slow/blocking work causes system-wide
+input lag or silent hook removal. Keep callbacks fast; hand off real work to
+another thread.
 """
 
 from __future__ import annotations
@@ -186,10 +155,7 @@ kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
 def get_key_name(vk_code: int, scan_code: int = 0, extended: bool = False) -> str:
     """Best-effort human-readable name for a vk/scan code, e.g. 'F1', 'Left Ctrl'.
-
-    Handy for a future "press a key to bind" capture UI. Falls back to a
-    'VK_0x..' string if Windows doesn't have a name for it.
-    """
+    Falls back to 'VK_0x..' if Windows doesn't have a name for it."""
     if not scan_code:
         scan_code = user32.MapVirtualKeyW(vk_code, MAPVK_VK_TO_VSC)
     lparam = (scan_code & 0xFF) << 16
@@ -203,8 +169,7 @@ def get_key_name(vk_code: int, scan_code: int = 0, extended: bool = False) -> st
 
 
 # ---------------------------------------------------------------------------
-# Public event dataclasses -- stable, ergonomic types for downstream code
-# (remapper, macro recorder, capture UI). Never leak raw ctypes structs.
+# Public event dataclasses. Never leak raw ctypes structs to callers.
 # ---------------------------------------------------------------------------
 
 
@@ -260,11 +225,8 @@ MouseScrollCallback = Callable[[MouseScrollEvent], Optional[bool]]
 
 def _dispatch(callbacks: List[Callable], event) -> bool:
     """Call every callback with `event`; return True if any asked to suppress.
-
-    Exceptions from a callback are swallowed (never allowed to propagate
-    out of a ctypes hook callback -- an unhandled exception there can
-    crash the process or, worse, wedge the system-wide input hook).
-    """
+    Exceptions are swallowed -- one escaping a ctypes hook callback can crash
+    the process or wedge the system-wide input hook."""
     suppress = False
     for cb in list(callbacks):
         try:
@@ -282,10 +244,9 @@ def _dispatch(callbacks: List[Callable], event) -> bool:
 class HookManager:
     """Installs WH_KEYBOARD_LL / WH_MOUSE_LL and dispatches typed events.
 
-    Runs its own Win32 message pump on a dedicated background thread (hooks
-    of this kind are only ever delivered on the thread that installed them),
-    so calling start() never blocks the caller's own message loop / main
-    thread.
+    Runs its own Win32 message pump on a dedicated background thread (these
+    hooks only ever deliver on the thread that installed them), so start()
+    never blocks the caller's own thread.
     """
 
     def __init__(self) -> None:
@@ -302,9 +263,8 @@ class HookManager:
 
         self._keyboard_hook = None
         self._mouse_hook = None
-        # Keep strong references to the ctypes callback trampolines --
-        # if these get garbage collected while the hook is installed,
-        # Windows will call into freed memory and crash the process.
+        # Strong refs to the ctypes trampolines -- GC'ing these while the
+        # hook is installed makes Windows call into freed memory.
         self._keyboard_proc = HOOKPROC(self._keyboard_hook_proc)
         self._mouse_proc = HOOKPROC(self._mouse_hook_proc)
 
@@ -360,11 +320,8 @@ class HookManager:
 
     def start(self, timeout: float = 5.0) -> None:
         """Install both hooks and start pumping messages on a new thread.
-
-        Blocks until the hooks are confirmed installed (or raises on
-        failure) so that a `stop()` immediately after `start()` is always
-        safe.
-        """
+        Blocks until confirmed installed (or raises on failure), so a
+        `stop()` immediately after `start()` is always safe."""
         if self.is_running:
             return
 

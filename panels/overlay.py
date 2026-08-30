@@ -1,11 +1,8 @@
-"""panels/overlay.py -- Overlay panel: per-element enable toggles + basic
-styling for whatever the future HUD overlay window renders (stats HUD,
-accessibility crosshair, module status indicators). This panel only edits
-app_state.OverlayState -- the actual click-through, non-injecting HUD
-overlay window is separate, future work and is NOT built here. Overlay
-visibility is intentionally never gated by Window Select's focus filter
-(see remapper.py's window-filter gating) -- nothing in this panel reads or
-writes window_select state.
+"""panels/overlay.py -- Overlay panel: per-element enable toggles + styling
+for what hud_overlay.py renders (Stats HUD, accessibility crosshair, module
+status indicators). Only edits app_state.OverlayState -- the HUD window
+itself lives in hud_overlay.py. Visibility is never gated by Window
+Select's focus filter; nothing here reads or writes window_select state.
 """
 
 from __future__ import annotations
@@ -24,9 +21,8 @@ _PREVIEW_ICON_R = 20.0
 
 def _draw_crosshair_preview(draw_list, cx: float, cy: float, style: str, col: int) -> None:
     """Small static icon of `style`, mirroring hud_overlay.py's real
-    _draw_crosshair layout (same gap/arm proportions) but without its black
-    readability outline -- these sit on a themed card background, not over
-    an arbitrary game frame, so the outline isn't needed here."""
+    _draw_crosshair proportions but without its black readability outline --
+    not needed on a themed card background."""
     r = _PREVIEW_ICON_R
     gap = 3.0
     thick = 2.0
@@ -51,9 +47,8 @@ def _draw_crosshair_preview(draw_list, cx: float, cy: float, style: str, col: in
 
 
 def _crosshair_style_picker(theme, current: str) -> str:
-    """Horizontal row of clickable preview cards -- replaces a plain
-    dropdown so the user can see what each style actually looks like before
-    picking it, rather than picking a name blind."""
+    """Horizontal row of clickable preview cards -- replaces a plain dropdown
+    so the user sees each style before picking it."""
     new_style = current
     draw_list = imgui.get_window_draw_list()
     u32 = lambda rgba: imgui.color_convert_float4_to_u32(imgui.ImVec4(*rgba))  # noqa: E731
@@ -110,6 +105,15 @@ def _render_stats_hud(ctx: PanelContext) -> None:
         imgui.dummy(imgui.ImVec2(16, 0))
         imgui.same_line()
         _, s.show_fps = widgets.labeled_toggle(theme, "FPS", s.show_fps, ctx.state.settings.reduce_motion)
+        if s.show_fps and ctx.state.stats_fps_error:
+            imgui.spacing()
+            widgets.status_badge(theme, "warn", ctx.state.stats_fps_error)
+            widgets.muted_text(
+                theme,
+                "FPS only works against DirectX/DXGI games -- it can't read OpenGL "
+                "titles (including this app's own window) or software the OS reports "
+                "as still starting up.",
+            )
 
         widgets.muted_text(theme, "Position")
         s.corner = widgets.screen_position_picker(theme, "stats-position", s.corner)

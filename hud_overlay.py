@@ -1,39 +1,21 @@
-"""hud_overlay.py -- the HUD overlay window: a separate, non-injecting,
-click-through top-level window that DWM composites on top of the game via
-DirectComposition. This is NOT a hook into any game's own DX11/DX12/Vulkan
-swap chain, and nothing here is ever injected into another process. This
-module follows the project's hard architectural rules for HUD-style
-overlays.
+"""hud_overlay.py -- HUD overlay window: separate, non-injecting,
+click-through top-level window that DWM composites over the game via
+DirectComposition. Never hooks a game's own swap chain; nothing here is
+injected into another process.
 
-Renders three things: the accessibility crosshair (first slice), the Stats
-box (CPU/GPU/VRAM/RAM/FPS), and the two module status badges (Remapper /
-Macros enabled-count). Text rendering (Stats box numbers, badge counts) uses
-overlay_renderer.Renderer's GDI-backed text pipeline, ported in from
-R9Tools' dx11_renderer.py -- see that module's docstring.
+Renders the accessibility crosshair, Stats box (CPU/GPU/VRAM/RAM/FPS), and
+module status badges, via overlay_renderer.Renderer's GDI-backed text
+pipeline.
 
-Threading model:
-  - Runs entirely on its own background thread (start()/stop() from the
-    Companion window's main thread).
-  - The Companion window calls `update_crosshair(CrosshairState)`,
-    `update_stats(StatsHudState, StatsSnapshot)`,
-    `update_indicators(StatusIndicatorsState, remap_count, macro_count)`, and
-    `update_theme(Theme)` once per its own frame (see main.py's `_show_gui`
-    and shell.py's `render_frame`). Each copies only the handful of
-    plain-data fields it needs into its own lock-guarded snapshot -- the
-    live dataclass instances themselves are never handed across the thread
-    boundary, per this project's "lock-guarded snapshot, not
-    shared-mutable-state" rule.
-  - The render thread reads all snapshots once per frame under the same
-    lock. This mirrors R9Tools' `update_stats(dict)` / `threading.Lock`
-    pattern (see dx11_overlay.py there).
+Runs entirely on its own background thread. The Companion window pushes
+plain-data snapshots into this instance under a lock, once per its own frame
+(update_crosshair/update_stats/update_indicators/update_theme); the render
+thread reads them under the same lock. Live dataclass instances never cross
+the thread boundary, only immutable snapshots.
 
-Overlay visibility is intentionally NEVER gated by window focus or by
-the Remapper/Macro engine's window-filter state (per this module's own
-"Overlay visibility is never gated by the process-select window filter"
-scoping rule) -- each element renders whenever its own `enabled` flag is
-True, full stop, regardless of which window currently has OS focus. This is
-a deliberate
-divergence from R9Tools' model, where the crosshair hid on focus loss.
+Visibility is never gated by window focus or by the Remapper/Macro engine's
+window-filter state -- each element renders whenever its own `enabled` flag
+is set, regardless of which window has OS focus.
 """
 
 from __future__ import annotations
@@ -142,9 +124,8 @@ class _MSG(ctypes.Structure):
 
 @dataclass(frozen=True)
 class _CrosshairSnapshot:
-    """Plain-data copy of app_state.CrosshairState's fields. Frozen +
-    immutable so handing a reference across the lock boundary is safe
-    without needing to defensively copy again on read."""
+    """Plain-data copy of app_state.CrosshairState's fields. Frozen so
+    handing a reference across the lock boundary needs no defensive copy."""
 
     enabled: bool = False
     style: str = "Cross"
@@ -161,10 +142,9 @@ _BLACK = (0.0, 0.0, 0.0, 1.0)
 
 @dataclass(frozen=True)
 class _StatsSnapshot:
-    """Plain-data copy of app_state.StatsHudState's fields PLUS the latest
-    stats_poller.StatsSnapshot values, combined here since the render thread
-    needs both together every frame and only ever reads them together (see
-    main.py's `_show_gui` -- one `update_stats()` call per frame)."""
+    """Plain-data copy of app_state.StatsHudState's fields plus the latest
+    stats_poller.StatsSnapshot values -- combined since the render thread
+    always reads both together."""
 
     enabled: bool = False
     show_cpu: bool = True
@@ -196,8 +176,7 @@ _DEFAULT_STATS_SNAPSHOT = _StatsSnapshot()
 @dataclass(frozen=True)
 class _IndicatorSnapshot:
     """Plain-data copy of app_state.StatusIndicatorsState's fields plus the
-    live enabled-entry counts (computed each frame from
-    app_state.remapper.entries / app_state.macros.macros -- see main.py)."""
+    live enabled-entry counts (computed by the caller each frame)."""
 
     enabled: bool = False
     show_remap_badge: bool = True
@@ -213,13 +192,10 @@ _DEFAULT_INDICATOR_SNAPSHOT = _IndicatorSnapshot()
 
 @dataclass(frozen=True)
 class _ThemeSnapshot:
-    """The handful of theme.Theme fields the Stats box / status badges
-    actually need to visually track the Companion window's active theme
-    (including live Color Cycle drift -- see shell.py's `render_frame`,
-    which resolves Color Cycle to a real Theme every frame before calling
-    `update_theme()`). Defaults reuse theme.DARK's own values so the overlay
-    never renders an arbitrary placeholder color before the first real
-    `update_theme()` call lands."""
+    """The theme.Theme fields the Stats box / status badges need to track
+    the Companion window's active theme (including live Color Cycle drift).
+    Defaults to theme.DARK's values so nothing renders a placeholder color
+    before the first real update_theme() call."""
 
     accent: tuple = theme_module.DARK.accent
     accent_text: tuple = theme_module.DARK.accent_text
@@ -245,11 +221,9 @@ def _fmt_temp(v: Optional[float]) -> str:
 
 
 def _corner_origin(corner: str, margin: float, w: float, h: float, sw: float, sh: float) -> tuple:
-    """Top-left (x, y) for a `w`x`h` box anchored to `corner` of the screen,
-    inset by `margin`. Shared by the Stats box and the status badges --
-    same position-name convention as panels/overlay.py's `_POSITIONS`
-    (renamed from `_CORNERS` when Middle Left/Right were added -- it's no
-    longer just the four corners)."""
+    """Top-left (x, y) for a `w`x`h` box anchored to `corner`, inset by
+    `margin`. Shared by the Stats box and status badges; position names
+    match panels/overlay.py's `_POSITIONS`."""
     if corner == "Top Left":
         return margin, margin
     if corner == "Top Middle":
@@ -337,10 +311,9 @@ class HudOverlay:
         self._thread = None
 
     def update_crosshair(self, crosshair_state) -> None:
-        """Called once per Companion-window frame (see main.py). Copies the
-        handful of plain-data fields it needs out of the live CrosshairState
-        dataclass into an immutable snapshot under a lock -- the render
-        thread never touches the CrosshairState instance itself."""
+        """Called once per Companion-window frame. Copies plain-data fields
+        into an immutable snapshot under a lock -- the render thread never
+        touches the live CrosshairState instance."""
         snap = _CrosshairSnapshot(
             enabled=bool(crosshair_state.enabled),
             style=str(crosshair_state.style),
@@ -353,11 +326,9 @@ class HudOverlay:
             self._snapshot = snap
 
     def update_stats(self, stats_hud_state, stats_poller_snapshot) -> None:
-        """Called once per Companion-window frame (see main.py). Combines
-        app_state.StatsHudState's toggles/style fields with the latest
-        stats_poller.StatsSnapshot values into one immutable snapshot under
-        a lock -- same "copy plain data, don't share the live object" rule
-        as update_crosshair() above."""
+        """Called once per Companion-window frame. Combines StatsHudState's
+        toggles/style with the latest StatsSnapshot into one immutable
+        snapshot under a lock."""
         snap = _StatsSnapshot(
             enabled=bool(stats_hud_state.enabled),
             show_cpu=bool(stats_hud_state.show_cpu),
@@ -385,11 +356,9 @@ class HudOverlay:
             self._stats_snapshot = snap
 
     def update_indicators(self, status_indicators_state, remap_count: int, macro_count: int) -> None:
-        """Called once per Companion-window frame (see main.py). `remap_count`/
-        `macro_count` are the live counts of *enabled* RemapEntry/MacroDef
-        entries -- computed by the caller from app_state.remapper.entries /
-        app_state.macros.macros, since this module never touches app_state
-        directly (see module docstring)."""
+        """Called once per Companion-window frame. `remap_count`/`macro_count`
+        are live counts of enabled entries, computed by the caller -- this
+        module never touches app_state directly."""
         snap = _IndicatorSnapshot(
             enabled=bool(status_indicators_state.enabled),
             show_remap_badge=bool(status_indicators_state.show_remap_badge),
@@ -403,13 +372,9 @@ class HudOverlay:
             self._indicator_snapshot = snap
 
     def update_theme(self, theme) -> None:
-        """Called once per Companion-window frame from shell.py's
-        `render_frame`, right after it resolves the active theme (including
-        the live, time-varying Color Cycle resolution -- see
-        theme.resolve_color_cycle_theme()) -- so the Stats box border and
-        the status badges' accent rings/glow visibly track whatever theme
-        (or Color Cycle instant) is currently active, the same way the rest
-        of the Companion window's UI does."""
+        """Called once per frame from shell.py after it resolves the active
+        theme (including live Color Cycle drift), so the Stats box border
+        and status badge rings track it the same way the rest of the UI does."""
         snap = _ThemeSnapshot(
             accent=tuple(theme.accent),
             accent_text=tuple(theme.accent_text),
@@ -491,13 +456,11 @@ class HudOverlay:
         self._sw = sw
         self._sh = sh
 
-        # WS_EX_NOREDIRECTIONBITMAP: no GDI-accessible surface for this
-        # window; DComp owns the visual content and DWM reads the DXGI swap
-        # chain directly. WS_EX_LAYERED is required for real click-through
-        # here even though SetLayeredWindowAttributes/UpdateLayeredWindow are
-        # never called -- WS_EX_TRANSPARENT alone is not sufficient on this
-        # window type (verified against R9Tools' own prior finding, and
-        # re-verified independently below with a live WindowFromPoint test).
+        # WS_EX_NOREDIRECTIONBITMAP: no GDI surface, DComp owns the content
+        # and DWM reads the DXGI swap chain directly. WS_EX_LAYERED is
+        # required for real click-through on this window type even though
+        # SetLayeredWindowAttributes/UpdateLayeredWindow are never called --
+        # WS_EX_TRANSPARENT alone isn't sufficient here.
         ex_style = (_WS_EX_TOPMOST | _WS_EX_NOACTIVATE | _WS_EX_TOOLWINDOW
                     | _WS_EX_TRANSPARENT | _WS_EX_NOREDIRECTIONBITMAP
                     | _WS_EX_LAYERED)
@@ -518,10 +481,8 @@ class HudOverlay:
         # visually transparent until a non-zero-alpha frame is presented.
         _user32.ShowWindow(hwnd, 1)  # SW_SHOWNORMAL
 
-        # Defensive: WS_EX_TOPMOST passed to CreateWindowExW is usually
-        # honoured for initial z-order placement but not universally reliable
-        # (some games repeatedly reassert their own HWND_TOPMOST). Explicitly
-        # re-insert at the top of the topmost band right after creation.
+        # Some games repeatedly reassert their own HWND_TOPMOST, so
+        # explicitly re-insert at the top of the topmost band after creation.
         _SetWindowPos(hwnd, _HWND_TOPMOST, 0, 0, 0, 0, _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE)
 
         exstyle = _GetWindowLongPtrW(hwnd, _GWL_EXSTYLE)
@@ -652,15 +613,9 @@ class HudOverlay:
 
     def _draw_crosshair(self, r: Renderer, snap: _CrosshairSnapshot) -> None:
         if not snap.enabled:
-            # Mirrors _draw_stats_box/_draw_indicators' own early-out. Without
-            # this, the crosshair rendered unconditionally any time
-            # `_render_loop`'s `needs_draw` was True for a DIFFERENT reason
-            # (e.g. only the Stats HUD toggle on) -- `snap.enabled` was
-            # already one of `needs_draw`'s OR-conditions (so the loop
-            # correctly skips presenting when EVERYTHING is off), but nothing
-            # re-checked it here once any element made needs_draw True.
-            # Caught via an actual screenshot with Stats HUD on and Crosshair
-            # off, per this project's own screenshot-verification rule.
+            # Mirrors _draw_stats_box/_draw_indicators' own early-out --
+            # needs_draw being True for another element doesn't imply this
+            # one should render.
             return
         style = snap.style
         size = max(1.0, snap.size)
@@ -672,12 +627,8 @@ class HudOverlay:
         cx = self._sw * 0.5
         cy = self._sh * 0.5
 
-        # Small readability outline drawn in black behind the accent color,
-        # same technique R9Tools used -- keeps the crosshair visible against
-        # both bright and dark backgrounds without adding new CrosshairState
-        # fields (see app_state.CrosshairState -- no outline field exists,
-        # this is a fixed, non-configurable readability aid). 1px per side,
-        # tightened down from an initial 1.5 for a less heavy line.
+        # Fixed, non-configurable black outline behind the accent color --
+        # keeps the crosshair visible against both bright and dark backgrounds.
         outline = 1.0
 
         if style == "Dot":
@@ -731,9 +682,8 @@ class HudOverlay:
         draw_cross(fg, thick)
 
     # ------------------------------------------------------------------
-    # Stats box drawing -- deliberately plain: rounded-corner box,
-    # semi-transparent background, simple stacked label lines. Contrasts on
-    # purpose with the "artsy" status badges below (see _draw_indicators).
+    # Stats box: plain rounded box, semi-transparent bg, stacked label
+    # lines -- contrasts deliberately with the badges' style below.
     # ------------------------------------------------------------------
 
     def _draw_stats_box(self, r: Renderer, snap: _StatsSnapshot, theme: _ThemeSnapshot) -> None:
@@ -794,19 +744,16 @@ class HudOverlay:
             ty += h + line_gap
 
     # ------------------------------------------------------------------
-    # Module status badges -- "artsy" by explicit request, deliberately
-    # contrasting the Stats box's plain design: circular badges with a
-    # themed accent ring + soft glow, count centered inside, small label
-    # beneath. Always built from the live theme snapshot (never fixed
-    # colors) so these visibly track theme changes and Color Cycle drift.
+    # Module status badges: circular, themed accent ring + soft glow, count
+    # centered, label beneath. Built from the live theme snapshot so they
+    # track theme changes and Color Cycle drift.
     # ------------------------------------------------------------------
 
     def _draw_indicator_badge(self, r: Renderer, cx: float, cy: float, radius: float,
                                count: int, label: str, theme: _ThemeSnapshot, scale: float) -> None:
         accent = theme.accent
-        # Soft outward glow: a few concentric rings of decreasing alpha --
-        # cheap stand-in for a real blur (no blur shader in this geometry
-        # pipeline), same idea as a CSS box-shadow ring.
+        # Concentric rings of decreasing alpha -- cheap glow stand-in, no
+        # blur shader in this geometry pipeline.
         for i, dr in enumerate((7.0, 4.5, 2.0)):
             alpha = 0.10 - i * 0.03
             if alpha <= 0.0:

@@ -1,36 +1,21 @@
-"""theme.py -- Shattered Gaming Overlay's palette/style system for the Companion window.
+"""theme.py -- palette/style system for the Companion window.
 
-Themes are plain data, not colors hardcoded into widget code. `Theme` is a
-frozen dataclass of named colors and layout metrics; `THEMES` is the registry
-new themes register into. Panels/widgets should never hardcode a color --
-they pull named tokens off the active `Theme` (see `apply_theme` /
-`get_theme`). Seven themes ship today (Dark, Violet, Ember, Slate, and High
-Contrast are dark; Daylight is light; Color Cycle is the animated, user-
-configurable one -- see its own comment block below) -- proof the
-data-driven split works, and groundwork for community-contributed palettes
-being just another `Theme(...)` value, not a rewrite of every panel.
+`Theme` is a frozen dataclass of named colors + layout metrics; `THEMES` is
+the registry. Panels pull named tokens off the active `Theme`, never
+hardcode colors (see `apply_theme`/`get_theme`). Seven themes ship (Dark,
+Violet, Ember, Slate, High Contrast, Daylight, and the animated Color
+Cycle).
 
-Contrast methodology (WCAG 2.2 relative-luminance formula -- linearize each
-sRGB channel, L = 0.2126R + 0.7152G + 0.0722B, ratio = (Lmax+0.05)/(Lmin+0.05);
-AA requires >= 4.5:1 for normal text, AAA >= 7:1). Every ratio quoted in this
-file was computed with that exact formula, never eyeballed. Translucent
-surfaces (bg_card's 0.90 alpha etc.) are first composited over their base background
--- `fg*a + bg*(1-a)` per channel -- before measuring, since that's what's
-actually on screen. `border` / `nav_*_bg` are decorative-only (non-text) and
-are not held to the text contrast ratio; `text_disabled` is intentionally
-below AA since WCAG exempts disabled/inactive content -- never use it for
-anything interactive.
+Contrast ratios quoted in comments below use the WCAG 2.2 relative-luminance
+formula (linearized sRGB, L = 0.2126R + 0.7152G + 0.0722B; AA >= 4.5:1,
+AAA >= 7:1), computed against colors already composited over their base
+background where translucent. `border`/`nav_*_bg` are decorative, not held
+to text contrast; `text_disabled` is intentionally sub-AA (WCAG exempts
+disabled content) -- never use it for interactive text.
 
-DARK (default) -- computed ratios:
-  - text_primary   on bg_base / bg_card:  15.7:1 / 13.2:1  (AAA)
-  - text_secondary on bg_base / bg_card:   8.7:1 /  7.3:1  (AAA)
-  - text_disabled  on bg_base:             3.7:1  (exempt, see above)
-  - white text on accent / accent_hover / accent_active: 4.8 / 4.6 / 6.0 :1 (AA)
-  - accent_text (links/selected nav label) on bg_base: 8.7:1 (AAA)
-  - success / warning / danger / info on bg_base: 10.1 / 10.3 / 5.4 / 9.2 :1 (AA/AAA)
-Still worth a human glance in bright/sunlit conditions as a final check (see
-report gotchas). Every other theme below carries its own computed-ratio
-comment block in the same format, directly above its `Theme(...)`.
+DARK (default): text_primary 15.7:1/13.2:1 (base/card, AAA), text_secondary
+8.7:1/7.3:1 (AAA), text_disabled 3.7:1 (exempt), white-on-accent family
+4.8/4.6/6.0:1 (AA), accent_text 8.7:1 (AAA), status colors 10.1/10.3/5.4/9.2:1.
 """
 
 from __future__ import annotations
@@ -84,8 +69,8 @@ class Theme:
     accent_active: RGBA
     accent_text: RGBA  # accent used AS text (links, selected nav label) -- brighter than `accent`
 
-    # --- status colors -- ALWAYS paired with an icon + text label by callers,
-    # never used as the sole carrier of meaning (see widgets.status_badge) ---
+    # --- status colors -- always paired with an icon + label, never the sole
+    # carrier of meaning (see widgets.status_badge) ---
     success: RGBA
     warning: RGBA
     danger: RGBA
@@ -138,13 +123,8 @@ DARK = Theme(
     nav_hover_bg=(1.0, 1.0, 1.0, 0.05),
 )
 
-# Violet -- computed ratios:
-#   text_primary/bg_base: 15.8:1 (AAA)  text_primary/bg_card: 13.6:1 (AAA)
-#   text_secondary/bg_base: 8.8:1 (AAA)  text_secondary/bg_card: 7.5:1 (AAA)
-#   text_disabled/bg_base: 3.7:1 (exempt)
-#   white on accent/accent_hover/accent_active: 4.7 / 5.4 / 6.1 :1 (AA)
-#   accent_text/bg_base: 9.4:1 (AAA)
-#   success/warning/danger/info on bg_base: 10.3 / 10.4 / 5.4 / 9.4 :1 (AA/AAA)
+# Violet: text_primary 15.8/13.6:1 (AAA), text_secondary 8.8/7.5:1 (AAA),
+# white-on-accent family 4.7/5.4/6.1:1 (AA), accent_text 9.4:1, status 10.3/10.4/5.4/9.4:1.
 VIOLET = Theme(
     name="violet",
     display_name="Violet",
@@ -173,16 +153,10 @@ VIOLET = Theme(
     nav_hover_bg=(1.0, 1.0, 1.0, 0.05),
 )
 
-# Ember -- computed ratios:
-#   text_primary/bg_base: 15.9:1 (AAA)  text_primary/bg_card: 13.6:1 (AAA)
-#   text_secondary/bg_base: 9.6:1 (AAA)  text_secondary/bg_card: 8.2:1 (AAA)
-#   text_disabled/bg_base: 3.8:1 (exempt)
-#   dark button text on accent/accent_hover/accent_active: 6.1 / 6.9 / 5.6 :1 (AA)
-#     (amber/orange midtones don't clear 4.5:1 with white text at any
-#     reasonable brightness, so ember uses a near-black button label instead
-#     -- still icon+label, never color alone, matching widgets.status_badge)
-#   accent_text/bg_base: 10.5:1 (AAA)
-#   success/warning/danger/info on bg_base: 9.2 / 11.2 / 5.8 / 9.3 :1 (AA/AAA)
+# Ember: text_primary 15.9/13.6:1 (AAA), text_secondary 9.6/8.2:1 (AAA).
+# Uses near-black button labels, not white -- amber/orange can't clear 4.5:1
+# with white text at any reasonable brightness. Dark-on-accent 6.1/6.9/5.6:1
+# (AA), accent_text 10.5:1, status 9.2/11.2/5.8/9.3:1.
 EMBER = Theme(
     name="ember",
     display_name="Ember",
@@ -211,13 +185,8 @@ EMBER = Theme(
     nav_hover_bg=(1.0, 1.0, 1.0, 0.05),
 )
 
-# Slate -- computed ratios:
-#   text_primary/bg_base: 15.8:1 (AAA)  text_primary/bg_card: 13.3:1 (AAA)
-#   text_secondary/bg_base: 8.8:1 (AAA)  text_secondary/bg_card: 7.4:1 (AAA)
-#   text_disabled/bg_base: 3.9:1 (exempt)
-#   dark button text on accent/accent_hover/accent_active: 6.3 / 7.1 / 4.7 :1 (AA)
-#   accent_text/bg_base: 10.9:1 (AAA)
-#   success/warning/danger/info on bg_base: 10.2 / 10.3 / 5.4 / 11.3 :1 (AA/AAA)
+# Slate: text_primary 15.8/13.3:1 (AAA), text_secondary 8.8/7.4:1 (AAA),
+# dark-on-accent 6.3/7.1/4.7:1 (AA), accent_text 10.9:1, status 10.2/10.3/5.4/11.3:1.
 SLATE = Theme(
     name="slate",
     display_name="Slate",
@@ -246,17 +215,11 @@ SLATE = Theme(
     nav_hover_bg=(1.0, 1.0, 1.0, 0.05),
 )
 
-# Daylight (light theme) -- computed ratios:
-#   text_primary/bg_base: 16.6:1 (AAA)  text_primary/bg_card: 18.0:1 (AAA)
-#   text_secondary/bg_base: 7.9:1 (AAA)  text_secondary/bg_card: 8.6:1 (AAA)
-#   text_disabled/bg_base: 2.4:1 (exempt)
-#   white text on accent/accent_hover/accent_active: 5.6 / 4.8 / 7.2 :1 (AA)
-#   accent_text/bg_base: 8.6:1 (AAA)
-#   success/warning/danger/info on bg_base: 5.6 / 5.8 / 5.1 / 5.1 :1 (AA)
-#     (status hues are all darkened/desaturated well below their dark-theme
-#     versions -- the same bright green/amber/red that clears AA on a
-#     near-black background falls to ~2-4:1 on a near-white one, so these are
-#     independently tuned, not the dark-theme swatches reused verbatim)
+# Daylight (light theme): text_primary 16.6/18.0:1 (AAA), text_secondary
+# 7.9/8.6:1 (AAA), white-on-accent 5.6/4.8/7.2:1 (AA), accent_text 8.6:1.
+# Status hues are independently darkened/desaturated from the dark themes'
+# swatches -- reused verbatim they'd fall to ~2-4:1 on a near-white bg.
+# Status colors on bg_base: 5.6/5.8/5.1/5.1:1 (AA).
 DAYLIGHT = Theme(
     name="daylight",
     display_name="Daylight (Light)",
@@ -285,31 +248,12 @@ DAYLIGHT = Theme(
     nav_hover_bg=(0.0, 0.0, 0.0, 0.06),
 )
 
-# High Contrast -- computed ratios (every single one clears AAA, not just AA
-# -- this theme exists specifically for users who need the strongest
-# possible contrast, so "just clears AA" isn't good enough here the way it
-# is for the others):
-#   text_primary/bg_base: 21.0:1  text_primary/bg_card: 19.5:1
-#   text_secondary/bg_base: 15.9:1  text_secondary/bg_card: 14.8:1
-#   text_disabled/bg_base: 5.3:1 (exempt, and still far above what most
-#     themes' disabled text clears, since even "de-emphasized" text stays
-#     legible here)
-#   black button text on accent/accent_hover/accent_active: 14.4 / 15.5 /
-#     11.6 :1 (near-black text chosen over white specifically because the
-#     accent is a bright, saturated yellow -- white-on-yellow would be a
-#     much weaker pairing than black-on-yellow)
-#   accent_text/bg_base: 14.4:1
-#   success/warning/danger/info on bg_base: 15.5 / 10.6 / 7.6 / 13.7 :1
-#     (danger was deliberately brightened from a more typical muted red --
-#     #FF3B3B only cleared 5.9:1 -- to #FF6B6B specifically to clear AAA
-#     like everything else in this theme, rather than leaving one status
-#     color as the odd one out at merely-AA)
-# Pure black/white base plus saturated, maximally-differentiated accent and
-# status hues (yellow/green/red/cyan) -- the same color family convention
-# Windows' own built-in High Contrast themes use, deliberately, rather than
-# inventing a different high-contrast palette convention. Surfaces are
-# nearly opaque (0.97 alpha vs. the 0.90 "glassmorphism" used elsewhere)
-# since translucency works directly against maximizing contrast.
+# High Contrast: every ratio clears AAA, not just AA. text_primary 21.0/19.5:1,
+# text_secondary 15.9/14.8:1, text_disabled 5.3:1 (exempt, still high),
+# black-on-accent (yellow) 14.4/15.5/11.6:1, accent_text 14.4:1, status
+# 15.5/10.6/7.6/13.7:1. Follows Windows' own High Contrast convention:
+# black/white base + saturated yellow/green/red/cyan. Surfaces near-opaque
+# (0.97 alpha) since translucency works against maximizing contrast.
 HIGH_CONTRAST = Theme(
     name="high_contrast",
     display_name="High Contrast (AAA)",
@@ -341,81 +285,31 @@ HIGH_CONTRAST = Theme(
     nav_hover_bg=(1.0, 1.0, 1.0, 0.10),
 )
 
-# Color Cycle -- a user-configurable, animated theme: the ENTIRE palette
-# recolors with the live hue (backgrounds, cards, text, borders, accent --
-# everything except the four semantic status colors, which stay fixed since
-# "danger" drifting through green as the cycle turns would be actively
-# confusing). This was the second iteration of this theme -- the first only
-# animated the accent family and left backgrounds/text static, which read as
-# "barely changing" next to how dramatically the other themes differ from
-# each other; full-palette recoloring was requested specifically so
-# switching into Color Cycle feels like the same kind of change as picking
-# any other theme, just continuous instead of a discrete jump.
+# Color Cycle -- animated theme: the whole palette recolors with the live
+# hue (status colors stay fixed, so "danger" never drifts through green).
 #
-# Every non-status field's color is derived by solving, per frame, for the
-# HSV value (V) that makes that field's WCAG relative luminance land on
-# EXACTLY the luminance Dark's own real color for that field already has --
-# not an approximate HSV brightness band, an exact match via binary search
-# (see _cycle_role_color below). This is deliberately more rigorous than
-# picking fixed (S, V) numbers and spot-checking a few hues: an early
-# attempt at fixed bands passed easily at most hues but silently failed at
-# pure blue (hue ~0.667) for `accent_text`, because a saturated blue simply
-# cannot reach as high a luminance as other hues at the same "V" -- HSV's V
-# is peak-channel brightness, not perceptual luminance, and blue is only
-# weighted 0.0722 in the WCAG formula versus green's 0.7152. Solving for the
-# exact target luminance (and lowering `accent_text`'s saturation so blue
-# hues can physically reach its higher luminance target) fixes this
-# properly instead of papering over one bad sample point. Verified via a
-# 360-step full-hue-wheel sweep (every fraction of a degree), worst case
-# across the *entire* wheel, not just a few samples:
-#   text_primary/bg_base:      15.72:1 (AAA, matches Dark's 15.7 almost exactly)
-#   text_primary/bg_card:      13.12:1 (AAA)
-#   text_secondary/bg_base:     8.70:1 (AAA)
-#   text_secondary/bg_card:     7.26:1 (AAA)
-#   white text on accent:       4.78:1 (AA)
-#   white text on accent_hover: 4.58:1 (AA)
-#   white text on accent_active: 5.97:1 (AA/AAA)
-#   accent_text on bg_base:      5.53:1 (AA, saturation lowered from blue's
-#     infeasible ceiling specifically to keep this one AA-safe everywhere)
-#   accent_text on bg_card:      4.61:1 (AA)
-# accent/accent_hover/accent_active/accent_text saturations (0.92/0.92/0.95/
-# 0.50) are pushed as far as each role's contrast floor actually allows --
-# not the same ceiling for every role. Past the exact-target-luminance
-# feasibility point (worst-case hue is always blue, ~0.667, weighted only
-# 7.22% in the WCAG formula), _cycle_role_color's binary search simply
-# clamps V=1 and the color stops getting any brighter, so pushing an
-# accent-family role's saturation all the way to 1.0 costs it nothing more:
-# once V is pinned, white text's contrast against it can only ever improve
-# (a more saturated color is a *darker* one at fixed V=1, and darker
-# backgrounds mean stronger contrast against white foreground text) --
-# confirmed by re-sweeping the full wheel at sat=1.0 and getting the exact
-# same worst-case ratios as above. `accent_text` is the opposite case: it's
-# foreground text, so a saturation past its own ceiling makes the text
-# itself darker and actively *erodes* its contrast against the background.
-# That ceiling was re-solved directly (the actual constraint, not
-# eyeballed): the tighter of "accent_text on bg_base" and "on bg_card"
-# caps out at sat=0.51 for AA; 0.50 leaves a hair of margin. An earlier pass
-# (0.80/0.80/0.85/0.47) mistakenly treated all four roles as sharing one
-# ceiling and stopped short of the real one for the white-text roles --
-# fixed here by solving each role's true constraint independently (verified
-# the same way, full 360-step sweep) rather than a shared approximate band.
-# These hold for ANY hue at all, not just the shipped defaults or the two
-# colors a user happens to pick -- the solve targets an exact luminance per
-# field regardless of which hue it's given, so there's no "bad pair of
-# colors" that can break contrast the way there could with the old
-# fixed-band approach. Picking two very similar colors just makes the
-# animation itself subtler (less hue to travel between) -- that's a visual
-# choice, not a contrast risk.
+# Each non-status field's RGB is solved per frame via binary search
+# (_cycle_role_color) for the HSV value that makes its WCAG luminance match
+# DARK's real value for that field exactly, at whatever hue -- not a fixed
+# (S, V) band. That precision matters: HSV's V is peak-channel brightness,
+# not perceptual luminance, and blue (weighted only 0.0722 in WCAG vs.
+# green's 0.7152) can't reach as high a luminance as other hues at the same
+# V, so a fixed-band approach silently fails at blue for accent_text.
+# Per-role saturation (_CYCLE_ROLE_SAT) is tuned to each role's own
+# feasibility/contrast ceiling, not a shared value -- accent-family roles can
+# push saturation to their max since it only makes them darker (which helps
+# white-text contrast); accent_text is foreground text, so its ceiling is
+# capped where its own contrast against the background starts eroding
+# (sat=0.50, solved directly, not eyeballed). Worst case across a full
+# 360-step hue sweep: text_primary 15.72/13.12:1 (AAA), text_secondary
+# 8.70/7.26:1 (AAA), white-on-accent family 4.78/4.58/5.97:1 (AA),
+# accent_text 5.53/4.61:1 (AA). Holds for any hue, not just shipped defaults.
 #
-# The placeholder Theme registered below (COLOR_CYCLE) is never applied to
-# the live ImGui style directly -- its accent fields are dummies. Real,
-# live accent values are resolved once per frame in shell.py via
-# `resolve_color_cycle_theme()`, using SettingsState.cycle_color_a/b/
-# cycle_period_sec/cycle_elapsed_sec, and *that* resolved Theme is what
-# reaches `apply_theme()`. This placeholder exists solely so THEMES/
-# `get_theme()`/`theme_names()` keep working unmodified for the picker in
-# panels/settings.py -- see that module for the live color pickers + speed
-# slider, shown only while this theme is selected.
+# COLOR_CYCLE below is a placeholder never applied directly to the live
+# style -- its accent fields are dummies. shell.py resolves the real,
+# live Theme every frame via resolve_color_cycle_theme() and applies that
+# instead. The placeholder only exists so THEMES/get_theme()/theme_names()
+# work unmodified for the picker in panels/settings.py.
 COLOR_CYCLE = dataclasses.replace(
     DARK,
     name="color_cycle",
@@ -437,15 +331,10 @@ def theme_names() -> list:
 
 
 def apply_theme(theme: Theme) -> None:
-    """Push `theme` onto the live ImGui style.
-
-    Cheap enough (a few dozen struct writes) to call once per frame from the
-    top of the render loop, which keeps this idempotent by construction --
-    every field is always set from `theme`'s own base value every time, so
-    nothing compounds across frames. No in-app UI-scale multiplier is
-    applied here -- the app relies on Hello ImGui/Windows' own DPI scaling
-    instead of a custom slider (a custom slider was tried and removed --
-    redundant with the OS-level scaling).
+    """Push `theme` onto the live ImGui style. Cheap enough to call once per
+    frame; every field is set fresh from `theme` each time so nothing
+    compounds. No in-app UI-scale multiplier -- relies on Hello ImGui/
+    Windows' own DPI scaling instead.
     """
     style = imgui.get_style()
     t = theme
@@ -539,9 +428,8 @@ def apply_theme(theme: Theme) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Color Cycle: live full-palette resolution (see COLOR_CYCLE's comment block
-# above for the exact-luminance-solve rationale and the measured worst-case
-# contrast ratios this produces across the entire hue wheel).
+# Color Cycle: live full-palette resolution (see COLOR_CYCLE's comment
+# block above for the exact-luminance-solve rationale).
 # ---------------------------------------------------------------------------
 
 
@@ -553,12 +441,9 @@ def _luminance(rgba: RGBA) -> float:
     return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
 
 
-# Saturation per role. Deliberately grouped into a few bands rather than
-# hand-tuned per field -- the exact-luminance solve below is what actually
-# guarantees brightness, saturation only affects whether a given hue can
-# *reach* that target at all (see the blue/accent_text story in the comment
-# block above), so these just need to be "low enough to be reachable at
-# every hue for that role's typical target," not individually precise.
+# Saturation per role, grouped into bands. The luminance solve below
+# guarantees brightness; saturation only bounds whether a hue can reach that
+# target at all (see blue/accent_text note above).
 _CYCLE_ROLE_SAT: Dict[str, float] = {
     "bg_base": 0.30,
     "bg_sidebar": 0.32,
@@ -579,18 +464,15 @@ _CYCLE_ROLE_SAT: Dict[str, float] = {
     "accent_text": 0.50,  # lower than the rest -- see the blue-feasibility note above
 }
 
-# Every field _CYCLE_ROLE_SAT covers, keyed the same way, holding DARK's own
-# real luminance for that field -- computed once at import time from DARK
-# itself (not hardcoded numbers), so this can never silently drift out of
-# sync if DARK's palette ever changes.
+# Target luminance per role, computed from DARK at import time so it can't
+# drift out of sync if DARK's palette changes.
 _CYCLE_TARGET_LUM: Dict[str, float] = {name: _luminance(getattr(DARK, name)) for name in _CYCLE_ROLE_SAT}
 
 
 def _cycle_role_color(role: str, hue: float) -> RGBA:
-    """The color for `role` at the given hue, with alpha taken from DARK's
-    own value for that field (so translucent cards/popups stay translucent)
-    and RGB solved via binary search so this role's WCAG luminance matches
-    DARK's real value for it exactly, regardless of hue."""
+    """Color for `role` at `hue`: alpha from DARK's own value (keeps
+    translucent surfaces translucent), RGB solved via binary search so WCAG
+    luminance matches DARK's value for that field exactly, at any hue."""
     sat = _CYCLE_ROLE_SAT[role]
     target = _CYCLE_TARGET_LUM[role]
     lo, hi = 0.0, 1.0
@@ -606,32 +488,22 @@ def _cycle_role_color(role: str, hue: float) -> RGBA:
 
 
 def color_cycle_phase(period_sec: float, elapsed_sec: float) -> float:
-    """Sine-eased 0..1 phase for the slow back-and-forth drift.
-
-    A plain sine (not a triangle/sawtooth wave) so the direction reversal at
-    each end is a smooth ease rather than a jerky bounce -- the derivative
-    is zero right at phase 0 and phase 1, same shape as a Corsair-style
-    "breathing" keyboard effect. `elapsed_sec` is caller-owned (see
-    SettingsState.cycle_elapsed_sec / shell.py) specifically so it can be
-    frozen (not advanced) while Reduce Motion is on, rather than this
-    function needing to know about that setting itself.
+    """Sine-eased 0..1 phase for the back-and-forth drift -- sine (not a
+    triangle wave) so direction reversals ease smoothly, like a breathing
+    LED effect. `elapsed_sec` is caller-owned (shell.py) so Reduce Motion
+    can freeze it without this function knowing about that setting.
     """
-    period = max(period_sec, 0.001)  # guard against a stray 0/negative period
+    period = max(period_sec, 0.001)  # guard against 0/negative period
     angle = (2.0 * math.pi * elapsed_sec / period) - (math.pi / 2.0)
     return (math.sin(angle) + 1.0) / 2.0
 
 
 def resolve_color_cycle_theme(color_a: RGBA, color_b: RGBA, period_sec: float, elapsed_sec: float) -> Theme:
-    """Build a real, fully-populated Theme for the current instant of the
-    Color Cycle animation. `color_a`/`color_b` are linearly interpolated in
-    RGB (driven by `color_cycle_phase()`) to get a seed color; that seed's
-    HSV hue then drives every non-status field via `_cycle_role_color()`, so
-    the WHOLE palette recolors together the same way switching to a
-    different static theme would -- not just the accent. Status colors
-    (success/warning/danger/info) and layout metrics stay Dark's own fixed
-    values on purpose (see COLOR_CYCLE's module comment). Called once per
-    frame from shell.py, right before `apply_theme()` -- `apply_theme()`
-    itself stays non-time-aware.
+    """Build a fully-populated Theme for the current instant of the Color
+    Cycle animation. `color_a`/`color_b` interpolate to a seed color whose
+    hue drives every non-status field via `_cycle_role_color()`. Status
+    colors and metrics stay DARK's fixed values. Called once per frame from
+    shell.py, before `apply_theme()`.
     """
     phase = color_cycle_phase(period_sec, elapsed_sec)
     seed_r = color_a[0] + (color_b[0] - color_a[0]) * phase
