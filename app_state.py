@@ -28,12 +28,23 @@ def _next_id(prefix: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+class RemapMode(Enum):
+    HOLD = "Hold"
+    TOGGLE = "Toggle"
+
+
 @dataclass
 class RemapEntry:
     id: str
     source: KeyBind = field(default_factory=lambda: UNBOUND)
     destination: KeyBind = field(default_factory=lambda: UNBOUND)
     enabled: bool = True
+    # Hold (default): destination mirrors source down/up 1:1. Toggle: first
+    # press latches destination down, next press releases it; source release
+    # is a no-op. New field -- absent/unparsed on disk always resolves to
+    # HOLD (see profiles.py's _remap_entry_from_json), never silently
+    # changes an existing saved binding's behavior.
+    mode: RemapMode = RemapMode.HOLD
 
 
 @dataclass
@@ -145,6 +156,10 @@ class ProfileDef:
     persist_remapper: bool = False
     persist_macros: bool = False
     persist_window_select: bool = False
+    # Exe name (e.g. "eft.exe") this profile auto-loads for -- see
+    # profiles.check_auto_switch(). Blank (the default, and every profile
+    # saved before this field existed) never participates in auto-switch.
+    target_executable: str = ""
 
 
 @dataclass
@@ -214,6 +229,8 @@ class StatsHudState:
     show_gpu: bool = True
     show_ram: bool = True
     show_fps: bool = True
+    # Sparkline only -- the 1%/0.1% Low text line stays under show_fps.
+    show_fps_graph: bool = True
     corner: str = "Top Right"
     scale: float = 1.0
     color: Tuple[float, float, float, float] = (0.93, 0.94, 0.96, 1.0)
@@ -290,6 +307,10 @@ class SettingsState:
     # False: X button exits outright instead of hiding to tray. See
     # titlebar.py's _close().
     close_minimizes_to_tray: bool = True
+    # Off by default -- silently swapping the whole Remapper/Macros config on
+    # a focus change should be opt-in, not a surprise. See
+    # profiles.check_auto_switch().
+    auto_switch_profiles: bool = False
     last_checked_display: str = "Never checked"
     update_status: UpdateStatus = UpdateStatus.IDLE
     update_latest_version: str = ""

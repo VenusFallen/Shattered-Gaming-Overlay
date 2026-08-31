@@ -191,6 +191,19 @@ def _render_window_behavior(ctx: PanelContext) -> None:
         if changed:
             settings_store.save(ctx.state)
 
+        imgui.spacing()
+        changed, settings.auto_switch_profiles = widgets.labeled_toggle(
+            theme,
+            "Automatically switch profiles based on active window",
+            settings.auto_switch_profiles,
+            settings.reduce_motion,
+            tooltip="Loads a profile automatically when its Target Executable (set per-profile in "
+            "Profiles) matches whatever game just gained focus. Off by default -- this swaps your "
+            "whole Remapper/Macros config with no confirmation prompt.",
+        )
+        if changed:
+            settings_store.save(ctx.state)
+
 
 # Maps UpdateStatus -> (badge level, badge label).
 def _status_badge_args(status: UpdateStatus, settings) -> tuple[str, str]:

@@ -105,6 +105,12 @@ def _render_stats_hud(ctx: PanelContext) -> None:
         imgui.dummy(imgui.ImVec2(16, 0))
         imgui.same_line()
         _, s.show_fps = widgets.labeled_toggle(theme, "FPS", s.show_fps, ctx.state.settings.reduce_motion)
+        imgui.same_line()
+        imgui.dummy(imgui.ImVec2(16, 0))
+        imgui.same_line()
+        _, s.show_fps_graph = widgets.labeled_toggle(
+            theme, "Graph", s.show_fps_graph, ctx.state.settings.reduce_motion
+        )
         if s.show_fps and ctx.state.stats_fps_error:
             imgui.spacing()
             widgets.status_badge(theme, "warn", ctx.state.stats_fps_error)

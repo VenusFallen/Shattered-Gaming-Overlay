@@ -10,9 +10,11 @@ from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
 import widgets
-from app_state import RemapEntry
+from app_state import RemapEntry, RemapMode
 from key_capture import KeyBind
 from panel_context import PanelContext
+
+_MODE_LABELS = [m.value for m in RemapMode]
 
 
 def _handle_capture(ctx: PanelContext, entry: RemapEntry, field_name: str) -> None:
@@ -78,6 +80,17 @@ def render(ctx: PanelContext) -> None:
             imgui.text(fa.ICON_FA_ARROW_RIGHT)
             imgui.same_line()
             _handle_capture(ctx, entry, "destination")
+
+            imgui.same_line()
+            imgui.dummy(imgui.ImVec2(20, 0))
+            imgui.same_line()
+            mode_idx = list(RemapMode).index(entry.mode)
+            imgui.set_next_item_width(110)
+            changed, mode_idx = imgui.combo("##mode", mode_idx, _MODE_LABELS)
+            if changed:
+                entry.mode = list(RemapMode)[mode_idx]
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Hold: destination follows source down/up.\nToggle: first press latches destination down, next press releases it. Release does nothing.")
 
             imgui.same_line()
             imgui.dummy(imgui.ImVec2(20, 0))
