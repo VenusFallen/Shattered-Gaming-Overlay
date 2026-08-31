@@ -1,5 +1,6 @@
 """stats_poller.py -- background hardware-stats + FPS polling, feeding the
-Stats HUD (CPU/GPU usage & temp, VRAM, RAM, FPS).
+Stats HUD (CPU/GPU usage & temp, VRAM, RAM, FPS, 1%/0.1% frame-time lows,
+and a short recent-frame-time history for the HUD's live graph).
 
 Hard-rule compliance:
 - LibreHardwareMonitorLib (bundled unmodified in lib/, MPL 2.0) is opened
@@ -34,6 +35,7 @@ snapshot -- the two subsystems fail independently.
 
 from __future__ import annotations
 
+import heapq
 import logging
 import signal
 import statistics
@@ -44,7 +46,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import window_select
 
@@ -69,6 +71,25 @@ _FPS_STALE_SEC = 10.0       # no fresh sample in this long -> report no FPS
 # 30-sample one. Hold at "no data" until enough samples exist.
 _FPS_MIN_SAMPLES = 10
 _PID_DEBOUNCE_SEC = 0.75    # foreground pid must be stable this long before retargeting
+
+# _FPS_ROLLING_WINDOW (30) is sized purely for a responsive, outlier-resistant
+# *median* -- nowhere near enough for a real 1%/0.1% low. A 0.1% low needs a
+# real sample in the bottom 0.1% of the window to mean anything; a 30-sample
+# window's bottom 0.1% is a fraction of one sample. Rather than blow up the
+# median window's responsiveness by growing it, _FpsTracker keeps a second,
+# much larger buffer (_history) dedicated to percentile-low calc + the HUD
+# graph. 4000 samples puts 4 real samples in the bottom 0.1% bucket (40 in
+# the bottom 1%) -- an actual small average, not one noisy spike -- while
+# still being a live rolling window (not "since start of session").
+_FPS_HISTORY_WINDOW = 4000
+# Below this many history samples, a 0.1%-low bucket would round to a single
+# sample -- report "no data" rather than a number that's really just "the
+# single worst frame so far".
+_FPS_PERCENTILE_MIN_SAMPLES = 300
+# Points fed to the HUD's live graph -- a glance-sized recent window, not the
+# full percentile history. Kept modest since it's redrawn (a handful of
+# draw_line calls) every overlay frame.
+_FPS_GRAPH_POINTS = 90
 
 _pm_missing_warned = False       # log "binary not found" only once per session
 _pm_launch_failed_warned = False  # log "failed to launch" only once per session
@@ -111,6 +132,27 @@ def _warn_presentmon_launch_failed_once(exc: Exception) -> None:
         pass
 
 
+def _percentile_low_fps(ms_samples, fraction: float) -> Optional[float]:
+    """1%/0.1%-low, CapFrameX/MSI Afterburner style: not a percentile
+    *boundary* value -- the average frame time of the slowest `fraction`
+    share of samples (e.g. fraction=0.01 -> slowest 1%), converted to an
+    fps-equivalent number. `ms_samples` is msBetweenPresents values (higher
+    = slower = worse), so "slowest" is the largest values, not the smallest.
+
+    Pure function, no locking/threading concerns -- takes a plain sequence
+    so it's directly unit-testable without spinning up a real _FpsTracker.
+    """
+    n = len(ms_samples)
+    if n == 0:
+        return None
+    count = max(1, round(n * fraction))
+    slowest = heapq.nlargest(count, ms_samples)
+    avg_ms = sum(slowest) / len(slowest)
+    if avg_ms <= 0:
+        return None
+    return 1000.0 / avg_ms
+
+
 class _FpsTracker:
     """Owns one PresentMon subprocess targeting a single PID at a time.
 
@@ -127,6 +169,11 @@ class _FpsTracker:
         dropped-frame spikes (2x/3x/7x the steady interval) are common
         enough that even one or two inside a 30-sample mean drag the
         reported number down by more than half; a median shrugs them off.
+
+    Keeps a second, much larger sample buffer (`_history`, see
+    _FPS_HISTORY_WINDOW's comment) purely for 1%/0.1%-low calc and the HUD's
+    live graph -- `_samples`/get_fps() stays untouched and just as
+    responsive as before this feature existed.
     """
 
     def __init__(self) -> None:
@@ -134,6 +181,7 @@ class _FpsTracker:
         self._proc: Optional[subprocess.Popen] = None
         self._reader_thread: Optional[threading.Thread] = None
         self._samples: deque = deque(maxlen=_FPS_ROLLING_WINDOW)
+        self._history: deque = deque(maxlen=_FPS_HISTORY_WINDOW)
         self._last_sample_ts = 0.0
         self._skip_next_sample = True
         self.last_error: Optional[str] = None
@@ -164,6 +212,7 @@ class _FpsTracker:
             return
         with self._lock:
             self._samples.clear()
+            self._history.clear()
             self._last_sample_ts = 0.0
             self._skip_next_sample = True
         self._reader_thread = threading.Thread(
@@ -200,6 +249,7 @@ class _FpsTracker:
                     pass
         with self._lock:
             self._samples.clear()
+            self._history.clear()
 
     def get_fps(self) -> Optional[float]:
         with self._lock:
@@ -211,6 +261,35 @@ class _FpsTracker:
         if median_ms <= 0:
             return None
         return 1000.0 / median_ms
+
+    def get_percentile_lows(self) -> Optional[Tuple[float, float]]:
+        """(1%-low fps, 0.1%-low fps) over the large `_history` window, or
+        None if there aren't enough samples yet for a meaningful 0.1%
+        bucket (see _FPS_PERCENTILE_MIN_SAMPLES) or the feed's gone stale."""
+        with self._lock:
+            if len(self._history) < _FPS_PERCENTILE_MIN_SAMPLES:
+                return None
+            if time.monotonic() - self._last_sample_ts > _FPS_STALE_SEC:
+                return None
+            samples = list(self._history)
+        low_1pct = _percentile_low_fps(samples, 0.01)
+        low_0_1pct = _percentile_low_fps(samples, 0.001)
+        if low_1pct is None or low_0_1pct is None:
+            return None
+        return low_1pct, low_0_1pct
+
+    def get_frame_time_history(self, n: int = _FPS_GRAPH_POINTS) -> Tuple[float, ...]:
+        """Most recent up-to-`n` raw msBetweenPresents samples, oldest
+        first -- feeds the HUD's live graph. Cheap slice under the lock, no
+        computation. Stale-gated the same as get_fps()/get_percentile_lows()
+        so the graph doesn't keep showing dead data after the game exits."""
+        with self._lock:
+            if not self._history:
+                return ()
+            if time.monotonic() - self._last_sample_ts > _FPS_STALE_SEC:
+                return ()
+            hist = list(self._history)
+        return tuple(hist[-n:])
 
     def _read_loop(self) -> None:
         proc = self._proc
@@ -249,6 +328,7 @@ class _FpsTracker:
                         self._skip_next_sample = False
                         continue
                     self._samples.append(ms)
+                    self._history.append(ms)
                     self._last_sample_ts = time.monotonic()
         except Exception:
             # Normal on terminate() (pipe closed mid-read) -- not worth logging.
@@ -376,6 +456,14 @@ class StatsSnapshot:
     `available`/`error` describe the CPU/GPU/RAM (LibreHardwareMonitor) side
     only. `fps`/`fps_error` are independent -- FPS (PresentMon) can be
     unavailable while CPU/GPU/RAM data is flowing fine, and vice versa.
+
+    `fps_1pct_low`/`fps_0_1pct_low` and `fps_frame_time_history` share
+    `fps`'s availability story but warm up separately (and later) --  they
+    need `_FPS_PERCENTILE_MIN_SAMPLES` samples in the tracker's larger
+    history window, not just `_FPS_MIN_SAMPLES`, so it's normal for `fps` to
+    be populated for a few seconds before these are. `fps_frame_time_history`
+    is raw msBetweenPresents samples (oldest first), not fps -- callers
+    convert if they want an fps-scale graph.
     """
 
     available: bool = False
@@ -394,6 +482,9 @@ class StatsSnapshot:
 
     fps: Optional[float] = None
     fps_error: Optional[str] = None
+    fps_1pct_low: Optional[float] = None
+    fps_0_1pct_low: Optional[float] = None
+    fps_frame_time_history: tuple = ()
 
 
 _UNAVAILABLE_SNAPSHOT_ERROR = "LibreHardwareMonitor is unavailable"
@@ -530,6 +621,9 @@ class StatsPoller:
                     ram_total_gb=data.get("ram_total_gb"),
                     fps=data.get("fps"),
                     fps_error=data.get("fps_error"),
+                    fps_1pct_low=data.get("fps_1pct_low"),
+                    fps_0_1pct_low=data.get("fps_0_1pct_low"),
+                    fps_frame_time_history=data.get("fps_frame_time_history", ()),
                 )
                 with self._lock:
                     self._snapshot = snapshot
@@ -574,6 +668,10 @@ class StatsPoller:
             fps_val = self._fps_tracker.get_fps()
             if fps_val is not None:
                 data["fps"] = fps_val
+            lows = self._fps_tracker.get_percentile_lows()
+            if lows is not None:
+                data["fps_1pct_low"], data["fps_0_1pct_low"] = lows
+            data["fps_frame_time_history"] = self._fps_tracker.get_frame_time_history()
             fps_error = self._fps_tracker.last_error
         elif self._fps_missing_error is not None:
             fps_error = self._fps_missing_error

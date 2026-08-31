@@ -19,6 +19,17 @@ every profile lives here, in a module-level cache keyed by profile id, and
 is what serializes to/from profiles.json. `AppState.remapper` / `.macros` /
 `.window_select` / `.overlay` hold only the currently active profile's live
 state -- `save_profile()` snapshots that back into a profile's payload.
+
+`check_auto_switch()` is a separate, opt-in mechanism (`settings.
+auto_switch_profiles`): it reacts to whichever process currently holds real
+OS foreground focus -- ANY process, not `AppState.window_select.selected` --
+against each profile's own `target_executable`. Deliberately independent of
+the single-selected-window gate that remapper.py/macro_engine.py read off
+`WindowSelectState`: that gate only exists once a user has explicitly picked
+one process to restrict Remapper/Macros to, whereas this reacts to whatever
+game currently has focus, matched per-profile. It only writes
+`AppState.window_select.selected` indirectly, the same way a manual Load
+already does (via `persist_window_select`), so it never fights that gate.
 """
 
 from __future__ import annotations
@@ -32,6 +43,9 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import psutil
+
+import window_select
 from app_state import (
     AppState,
     CrosshairState,
@@ -43,6 +57,7 @@ from app_state import (
     ProcessInfo,
     ProfileDef,
     RemapEntry,
+    RemapMode,
     StatsHudState,
     StatusIndicatorsState,
 )
@@ -92,6 +107,7 @@ def _remap_entry_to_json(e: RemapEntry) -> dict:
         "source": _keybind_to_json(e.source),
         "destination": _keybind_to_json(e.destination),
         "enabled": e.enabled,
+        "mode": e.mode.value,
     }
 
 
@@ -101,6 +117,10 @@ def _remap_entry_from_json(d: dict) -> RemapEntry:
         source=_keybind_from_json(d.get("source")),
         destination=_keybind_from_json(d.get("destination")),
         enabled=bool(d.get("enabled", True)),
+        # Missing on profiles saved before Toggle mode existed -- defaults
+        # to Hold, today's exact behavior, never silently retoggles a
+        # saved binding.
+        mode=_enum_from_value(RemapMode, d.get("mode"), RemapMode.HOLD),
     )
 
 
@@ -184,6 +204,7 @@ def _stats_hud_to_json(s: StatsHudState) -> dict:
         "show_gpu": s.show_gpu,
         "show_ram": s.show_ram,
         "show_fps": s.show_fps,
+        "show_fps_graph": s.show_fps_graph,
         "corner": s.corner,
         "scale": s.scale,
         "color": list(s.color),
@@ -200,6 +221,7 @@ def _stats_hud_from_json(d: Optional[dict]) -> StatsHudState:
         show_gpu=bool(d.get("show_gpu", default.show_gpu)),
         show_ram=bool(d.get("show_ram", default.show_ram)),
         show_fps=bool(d.get("show_fps", default.show_fps)),
+        show_fps_graph=bool(d.get("show_fps_graph", default.show_fps_graph)),
         corner=str(d.get("corner", default.corner)),
         scale=float(d.get("scale", default.scale)),
         color=_color_from_json(d.get("color"), default.color) if "color" in d else default.color,
@@ -280,6 +302,7 @@ def _profile_from_json(raw: dict) -> Tuple[ProfileDef, _ProfilePayload]:
         persist_remapper=bool(raw.get("persist_remapper", False)),
         persist_macros=bool(raw.get("persist_macros", False)),
         persist_window_select=bool(raw.get("persist_window_select", False)),
+        target_executable=str(raw.get("target_executable", "")),  # absent on pre-auto-switch profiles.json -- blank, opts out
     )
     payload: _ProfilePayload = {
         "entries": [_remap_entry_from_json(e) for e in raw.get("remapper", {}).get("entries", [])],
@@ -298,6 +321,7 @@ def _profile_payload_to_json(p: ProfileDef, payload: _ProfilePayload) -> dict:
         "persist_remapper": p.persist_remapper,
         "persist_macros": p.persist_macros,
         "persist_window_select": p.persist_window_select,
+        "target_executable": p.target_executable,
         "remapper": {"entries": [_remap_entry_to_json(e) for e in payload.get("entries", [])]},  # type: ignore[arg-type]
         "macros": {"macros": [_macro_to_json(m) for m in payload.get("macros", [])]},  # type: ignore[arg-type]
         "window_select": payload.get("window_select"),
@@ -503,3 +527,214 @@ def delete_profile(app_state: AppState, profile_id: str) -> bool:
         _payload_cache.pop(profile_id, None)
     _write_all(app_state)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Export / Import -- share a single profile as a standalone JSON file
+# ---------------------------------------------------------------------------
+#
+# The exported file is just one profile's worth of the exact same shape
+# _profile_payload_to_json()/_profile_from_json() already use for each entry
+# in profiles.json -- deliberately not a second format. Import treats the
+# file as untrusted (a stranger on the internet could hand a user this): the
+# native file-picker glue lives in panels/profiles.py, everything here is a
+# pure function so it's unit-testable without a live dialog.
+
+# Sanity cap on nested list lengths in an imported file -- untrusted input
+# shouldn't be able to balloon memory via an absurdly large `entries`/
+# `macros` array.
+_MAX_IMPORT_LIST_LEN = 2000
+
+# Presence of at least one of these top-level keys is what distinguishes "a
+# profile export" from "some unrelated JSON object" -- an empty `{}` or a
+# `{"foo": 1}` file is rejected rather than silently producing a blank
+# profile.
+_PROFILE_SHAPE_KEYS = {
+    "id", "name", "protected", "persist_remapper", "persist_macros",
+    "persist_window_select", "target_executable", "remapper", "macros",
+    "window_select", "overlay",
+}
+
+
+def export_profile_payload(app_state: AppState, profile_id: str) -> Optional[dict]:
+    """Build the standalone-export JSON dict for one profile. Reuses
+    `_profile_payload_to_json` -- the exact shape each entry in
+    profiles.json already has -- so an exported file is self-contained but
+    not a second serialization format. Returns None for an unknown id."""
+    profile = next((p for p in app_state.profiles.profiles if p.id == profile_id), None)
+    if profile is None:
+        return None
+    with _payload_lock:
+        payload = _payload_cache.get(profile_id, {"entries": [], "macros": [], "window_select": None, "overlay": None})
+        payload = copy.deepcopy(payload)
+    return _profile_payload_to_json(profile, payload)
+
+
+def export_profile_to_file(app_state: AppState, profile_id: str, path: str) -> bool:
+    """Write `profile_id`'s standalone export payload to `path` as JSON.
+    Returns False (never raises) if the profile is unknown or the write
+    fails -- matches this module's best-effort-disk-IO convention elsewhere."""
+    data = export_profile_payload(app_state, profile_id)
+    if data is None:
+        return False
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        return True
+    except OSError:
+        return False
+
+
+def suggest_export_filename(app_state: AppState, profile_id: str) -> str:
+    """Default Save-dialog filename derived from the profile's name, with
+    characters Windows filenames can't contain stripped."""
+    profile = next((p for p in app_state.profiles.profiles if p.id == profile_id), None)
+    name = profile.name if profile is not None else "profile"
+    safe = "".join(c for c in name if c not in '<>:"/\\|?*').strip()
+    return f"{safe or 'profile'}.json"
+
+
+def _validate_import_shape(raw: object) -> bool:
+    """Structural gate that runs BEFORE any field is trusted -- guards
+    _profile_from_json()'s per-field `.get()` chains against an unexpected
+    type (e.g. `remapper` as a list instead of a dict) or an oversized
+    nested list, either of which could otherwise raise or exhaust memory.
+    Deliberately permissive on field CONTENT past this point -- individual
+    values still get cast/defaulted field-by-field exactly like a normal
+    disk-loaded profiles.json entry."""
+    if not isinstance(raw, dict):
+        return False
+    if not (set(raw.keys()) & _PROFILE_SHAPE_KEYS):
+        return False  # doesn't look like a profile export at all
+
+    remapper = raw.get("remapper")
+    if remapper is not None:
+        if not isinstance(remapper, dict):
+            return False
+        entries = remapper.get("entries", [])
+        if not isinstance(entries, list) or len(entries) > _MAX_IMPORT_LIST_LEN:
+            return False
+
+    macros = raw.get("macros")
+    if macros is not None:
+        if not isinstance(macros, dict):
+            return False
+        macro_list = macros.get("macros", [])
+        if not isinstance(macro_list, list) or len(macro_list) > _MAX_IMPORT_LIST_LEN:
+            return False
+
+    if raw.get("window_select") is not None and not isinstance(raw["window_select"], dict):
+        return False
+    if raw.get("overlay") is not None and not isinstance(raw["overlay"], dict):
+        return False
+    return True
+
+
+def parse_profile_import(raw_text: str) -> Optional[Tuple[ProfileDef, _ProfilePayload]]:
+    """Parse+validate a standalone exported-profile JSON blob (untrusted).
+    Returns None on ANY malformed/wrong-shape input rather than raising --
+    a bad or hostile file must never crash the app. Pure/side-effect-free;
+    see `import_profile()` for actually adding the result to AppState."""
+    try:
+        raw = json.loads(raw_text)
+    except (ValueError, TypeError):
+        return None
+    if not _validate_import_shape(raw):
+        return None
+    try:
+        return _profile_from_json(raw)
+    except (TypeError, ValueError, AttributeError, KeyError, IndexError):
+        # Belt-and-suspenders -- _validate_import_shape catches the shapes
+        # known to crash _profile_from_json's per-field chains, but a
+        # stranger's file is never trusted enough to skip this.
+        return None
+
+
+def _unique_import_name(app_state: AppState, name: str) -> str:
+    """Resolve a name collision with an incrementing ' (n)' suffix rather
+    than prompting -- imported profiles are always added as new, NEVER
+    overwritten/merged into an existing profile by name-match (that risks
+    silent data loss)."""
+    existing = {p.name.lower() for p in app_state.profiles.profiles}
+    if name.lower() not in existing:
+        return name
+    n = 2
+    while f"{name} ({n})".lower() in existing:
+        n += 1
+    return f"{name} ({n})"
+
+
+def import_profile(app_state: AppState, raw_text: str) -> Optional[ProfileDef]:
+    """Parse `raw_text` (an exported profile's JSON) and add it as a
+    brand-new profile in `app_state`'s own list -- never protected (an
+    import can never claim the Default slot), never overwriting an existing
+    profile. Returns the new ProfileDef, or None if `raw_text` doesn't parse
+    as a valid profile export."""
+    parsed = parse_profile_import(raw_text)
+    if parsed is None:
+        return None
+    source_profile, payload = parsed
+
+    name = source_profile.name.strip() or "Imported Profile"
+    name = _unique_import_name(app_state, name)
+
+    profile = ProfileDef(
+        id=_fallback_id("profile"),
+        name=name,
+        protected=False,
+        persist_remapper=source_profile.persist_remapper,
+        persist_macros=source_profile.persist_macros,
+        persist_window_select=source_profile.persist_window_select,
+        target_executable=source_profile.target_executable,
+    )
+    app_state.profiles.profiles.append(profile)
+    with _payload_lock:
+        _payload_cache[profile.id] = payload
+    _write_all(app_state)
+    return profile
+
+
+# ---------------------------------------------------------------------------
+# Focus-driven auto-switch -- see module docstring
+# ---------------------------------------------------------------------------
+
+# Last foreground pid this function actually resolved to an exe name, so the
+# (comparatively pricier) psutil lookup below only runs on an actual focus
+# change, not every frame. Module-level like window_select.py's own
+# _last_refresh_monotonic -- runtime bookkeeping, not app state.
+_auto_switch_last_pid = 0
+
+
+def check_auto_switch(app_state: AppState) -> None:
+    """Per-frame entry point -- call alongside `window_select.refresh_if_stale()`.
+    No-ops instantly unless `settings.auto_switch_profiles` is on and the
+    focused pid has changed since the last call. Loads the first profile
+    whose `target_executable` matches the newly-focused process's exe name,
+    unless that profile is already active."""
+    global _auto_switch_last_pid
+    if not app_state.settings.auto_switch_profiles:
+        return
+
+    pid = window_select.cached_foreground_pid()
+    if pid == _auto_switch_last_pid:
+        return
+    _auto_switch_last_pid = pid
+    if not pid:
+        return
+
+    try:
+        exe_name = psutil.Process(pid).name()
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return
+
+    match = next(
+        (
+            p
+            for p in app_state.profiles.profiles
+            if p.target_executable and p.target_executable.lower() == exe_name.lower()
+        ),
+        None,
+    )
+    if match is None or match.id == app_state.profiles.active_id:
+        return
+    apply_profile(app_state, match.id)

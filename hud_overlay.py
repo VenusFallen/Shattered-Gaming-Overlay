@@ -3,7 +3,8 @@ click-through top-level window that DWM composites over the game via
 DirectComposition. Never hooks a game's own swap chain; nothing here is
 injected into another process.
 
-Renders the accessibility crosshair, Stats box (CPU/GPU/VRAM/RAM/FPS), and
+Renders the accessibility crosshair, Stats box (CPU/GPU/VRAM/RAM/FPS plus a
+1%/0.1% frame-time low readout and a small live frame-time graph), and
 module status badges, via overlay_renderer.Renderer's GDI-backed text
 pipeline.
 
@@ -151,6 +152,7 @@ class _StatsSnapshot:
     show_gpu: bool = True
     show_ram: bool = True
     show_fps: bool = True
+    show_fps_graph: bool = True
     corner: str = "Top Right"
     scale: float = 1.0
     color: tuple = (0.93, 0.94, 0.96, 1.0)
@@ -168,6 +170,14 @@ class _StatsSnapshot:
     ram_total_gb: Optional[float] = None
     fps: Optional[float] = None
     fps_error: Optional[str] = None
+    # 1%/0.1% lows stay gated under show_fps, same as the other compact
+    # stat lines -- no separate toggle for those. The sparkline itself has
+    # its own show_fps_graph toggle (see _draw_stats_box). fps_frame_time_history
+    # is raw msBetweenPresents ms values, oldest first -- converted to fps at
+    # draw time, same as stats_poller.StatsSnapshot stores it.
+    fps_1pct_low: Optional[float] = None
+    fps_0_1pct_low: Optional[float] = None
+    fps_frame_time_history: tuple = ()
 
 
 _DEFAULT_STATS_SNAPSHOT = _StatsSnapshot()
@@ -335,6 +345,7 @@ class HudOverlay:
             show_gpu=bool(stats_hud_state.show_gpu),
             show_ram=bool(stats_hud_state.show_ram),
             show_fps=bool(stats_hud_state.show_fps),
+            show_fps_graph=bool(stats_hud_state.show_fps_graph),
             corner=str(stats_hud_state.corner),
             scale=float(stats_hud_state.scale),
             color=tuple(stats_hud_state.color),
@@ -351,6 +362,9 @@ class HudOverlay:
             ram_total_gb=stats_poller_snapshot.ram_total_gb,
             fps=stats_poller_snapshot.fps,
             fps_error=stats_poller_snapshot.fps_error,
+            fps_1pct_low=stats_poller_snapshot.fps_1pct_low,
+            fps_0_1pct_low=stats_poller_snapshot.fps_0_1pct_low,
+            fps_frame_time_history=stats_poller_snapshot.fps_frame_time_history,
         )
         with self._lock:
             self._stats_snapshot = snap
@@ -697,6 +711,7 @@ class HudOverlay:
         font_face = "Segoe UI"
 
         lines: list = []
+        graph_fps: list = []  # fps-equivalent points for the sparkline, oldest first
         if not snap.available:
             lines.append(snap.error or "Stats unavailable")
         else:
@@ -719,6 +734,13 @@ class HudOverlay:
                     lines.append(f"FPS   {snap.fps:.0f}")
                 else:
                     lines.append("FPS   --")
+                # 1%/0.1% lows piggyback on show_fps -- additive to the
+                # existing FPS number, not separately toggleable. The
+                # sparkline has its own show_fps_graph toggle below.
+                if snap.fps_1pct_low is not None and snap.fps_0_1pct_low is not None:
+                    lines.append(f"1% Low  {snap.fps_1pct_low:.0f}    0.1% Low  {snap.fps_0_1pct_low:.0f}")
+                if snap.show_fps_graph and len(snap.fps_frame_time_history) >= 2:
+                    graph_fps = [1000.0 / ms for ms in snap.fps_frame_time_history if ms > 0]
 
         if not lines:
             return
@@ -727,8 +749,15 @@ class HudOverlay:
         text_w = max(w for w, _h in sizes) if sizes else 0
         line_h = sizes[0][1] if sizes else font_size
 
+        # Graph sits below the text lines inside the same box, width-matched
+        # to the widest line rather than given its own box -- a glance-sized
+        # strip, not a chart that dominates the readout (existing FPS number
+        # stays the primary display).
+        graph_h = 24.0 * scale if len(graph_fps) >= 2 else 0.0
+
+        lines_h = len(lines) * line_h + max(0, len(lines) - 1) * line_gap
         box_w = text_w + pad * 2
-        box_h = pad * 2 + len(lines) * line_h + max(0, len(lines) - 1) * line_gap
+        box_h = pad * 2 + lines_h + (line_gap + graph_h if graph_h > 0 else 0.0)
 
         x, y = _corner_origin(snap.corner, 20.0 * scale, box_w, box_h, self._sw, self._sh)
 
@@ -742,6 +771,46 @@ class HudOverlay:
         for text, (_w, h) in zip(lines, sizes):
             r.draw_text(text, x + pad, ty, snap.color, font_size, font_face)
             ty += h + line_gap
+
+        if graph_h > 0:
+            # `ty` already sits exactly one line_gap below the last line
+            # (the loop above adds a trailing line_gap even after the final
+            # line) -- box_h accounted for that same gap, so no further
+            # offset needed here.
+            self._draw_fps_graph(r, x + pad, ty, text_w, graph_h, graph_fps, theme)
+
+    def _draw_fps_graph(self, r: Renderer, x: float, y: float, w: float, h: float,
+                         values: list, theme: _ThemeSnapshot) -> None:
+        """Small fps-equivalent sparkline (recent stats_poller frame-time
+        history, converted to fps) -- plain polyline, no area fill, thin
+        border only. Cheap: len(values)-1 draw_line calls plus one
+        draw_rect, redrawn every overlay frame alongside the rest of the
+        Stats box."""
+        n = len(values)
+        if n < 2 or w <= 0 or h <= 0:
+            return
+
+        vmin, vmax = min(values), max(values)
+        span = vmax - vmin
+        line_col = (theme.accent[0], theme.accent[1], theme.accent[2], 0.9)
+        border_col = (theme.border[0], theme.border[1], theme.border[2], 0.6)
+
+        def px(i: int) -> float:
+            return x + w * (i / (n - 1))
+
+        def py(v: float) -> float:
+            # Flat line at vertical center when there's no variance in the
+            # window (span ~ 0) -- avoids a divide-by-zero, not a real spike.
+            if span < 0.001:
+                return y + h * 0.5
+            return y + h - ((v - vmin) / span) * h
+
+        r.draw_rect(x, y, w, h, 1.0, border_col)
+        prev_x, prev_y = px(0), py(values[0])
+        for i in range(1, n):
+            cur_x, cur_y = px(i), py(values[i])
+            r.draw_line(prev_x, prev_y, cur_x, cur_y, 1.25 * max(0.1, h / 24.0), line_col)
+            prev_x, prev_y = cur_x, cur_y
 
     # ------------------------------------------------------------------
     # Module status badges: circular, themed accent ring + soft glow, count

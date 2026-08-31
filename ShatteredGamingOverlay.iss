@@ -60,6 +60,17 @@ PrivilegesRequired=admin
 CloseApplications=yes
 RestartApplications=no
 
+[InstallDelete]
+; Cleans up the orphaned per-version settings ini files every past release
+; left behind (Hello ImGui derived the ini name from the version-embedded
+; window title before main.py started pinning it to ShatteredGamingOverlay.ini
+; -- see that fix's commit). Pattern matches only the old
+; Shattered_Gaming_Overlay__v<ver>.ini naming (spaces/dots sanitized to
+; underscores by Hello ImGui); the current stable ShatteredGamingOverlay.ini
+; doesn't match it, so a real user's live settings are never touched. Runs on
+; every install (fresh or update), harmless when there's nothing to delete.
+Type: files; Name: "{app}\Shattered_Gaming_Overlay__v*.ini"
+
 [Files]
 ; Main application
 Source: "dist\ShatteredGamingOverlay.exe"; DestDir: "{app}"; Flags: ignoreversion

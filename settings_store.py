@@ -86,6 +86,8 @@ def load(app_state: AppState) -> None:
         settings.check_for_updates_on_launch = bool(data["check_for_updates_on_launch"])
     if "close_minimizes_to_tray" in data:
         settings.close_minimizes_to_tray = bool(data["close_minimizes_to_tray"])
+    if "auto_switch_profiles" in data:
+        settings.auto_switch_profiles = bool(data["auto_switch_profiles"])
 
 
 def save(app_state: AppState) -> None:
@@ -102,5 +104,6 @@ def save(app_state: AppState) -> None:
         "cycle_period_sec": settings.cycle_period_sec,
         "check_for_updates_on_launch": settings.check_for_updates_on_launch,
         "close_minimizes_to_tray": settings.close_minimizes_to_tray,
+        "auto_switch_profiles": settings.auto_switch_profiles,
     }
     _write_disk(data)

@@ -9,6 +9,7 @@ from __future__ import annotations
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
+import file_dialog
 import profiles as profiles_engine
 import widgets
 from panel_context import PanelContext
@@ -44,6 +45,25 @@ def render(ctx: PanelContext) -> None:
     if imgui.is_item_hovered():
         imgui.set_tooltip("Saves the CURRENT Remapper/Macros/Window Select state under a new profile name.")
 
+    imgui.same_line()
+    if imgui.button(f"{fa.ICON_FA_FILE_IMPORT}  Import Profile"):
+        # Native Open dialog is blocking -- fine, only fires on this click.
+        path = file_dialog.show_open_dialog()
+        if path:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw_text = f.read()
+            except OSError:
+                raw_text = None
+            if raw_text is not None:
+                profiles_engine.import_profile(ctx.state, raw_text)
+                # Malformed/unreadable file -> import_profile() returns None
+                # and nothing changes; failing silent-but-safe here matches
+                # this panel's other no-op-on-invalid-input buttons (e.g.
+                # blank Create Profile name).
+    if imgui.is_item_hovered():
+        imgui.set_tooltip("Add a profile someone else exported to you as a new profile in your own list.")
+
     imgui.spacing()
     imgui.separator()
     imgui.spacing()
@@ -66,6 +86,15 @@ def render(ctx: PanelContext) -> None:
                     profiles_engine.save_profile(ctx.state, profile.id)
                 if imgui.is_item_hovered():
                     imgui.set_tooltip("Overwrite this profile with the CURRENT live Remapper/Macros/Window Select state.")
+
+            imgui.same_line()
+            if imgui.button(f"{fa.ICON_FA_FILE_EXPORT}  Export"):
+                default_name = profiles_engine.suggest_export_filename(ctx.state, profile.id)
+                path = file_dialog.show_save_dialog(default_filename=default_name)
+                if path:
+                    profiles_engine.export_profile_to_file(ctx.state, profile.id, path)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Save this profile to a standalone file you can share with someone else.")
 
             imgui.same_line()
             if profile.protected:
@@ -101,6 +130,19 @@ def render(ctx: PanelContext) -> None:
                 # Persist the flag change immediately (metadata only) --
                 # otherwise it's lost if the app closes before the next
                 # Save/Load/Create/Delete.
+                profiles_engine.sync_metadata(ctx.state)
+
+            imgui.spacing()
+            widgets.muted_text(theme, "Target executable (for auto-switch):")
+            imgui.same_line()
+            imgui.set_next_item_width(180)
+            _, profile.target_executable = imgui.input_text("##targetexe", profile.target_executable)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "e.g. eft.exe -- auto-loads this profile when that process gains focus. "
+                    "Blank opts out. Also requires the global toggle in Settings."
+                )
+            if imgui.is_item_deactivated_after_edit():
                 profiles_engine.sync_metadata(ctx.state)
 
             imgui.pop_id()

@@ -122,6 +122,11 @@ def main() -> None:
 
     runner_params = hi.RunnerParams()
 
+    # Explicit and stable -- left unset, Hello ImGui derives this from
+    # app_window_params.window_title below, which embeds VERSION, so every
+    # release left a new orphaned ini behind instead of reusing one.
+    runner_params.ini_filename = "ShatteredGamingOverlay.ini"
+
     runner_params.app_window_params.window_title = WINDOW_TITLE
     runner_params.app_window_params.window_geometry.size = (960, 600)
     runner_params.app_window_params.restore_previous_geometry = True
@@ -159,6 +164,10 @@ def main() -> None:
         # Settings is open -- call it here too so selected_has_focus stays
         # live for the remapper/macro gate regardless of active panel.
         window_select.refresh_if_stale(app_state.window_select)
+        # Independent of the Target Window gate above -- see profiles.py's
+        # module docstring for why this reacts to ANY focused process, not
+        # just WindowSelectState.selected.
+        profiles_engine.check_auto_switch(app_state)
         updater.update_manager.sync_to(app_state.settings)
         shell.render_frame(app_state)
         # Lock-guarded snapshot handoff to the HUD's own render thread.
@@ -177,7 +186,24 @@ def main() -> None:
     runner_params.callbacks.before_exit = lambda: _before_exit(app_state)
     runner_params.callbacks.show_gui = _show_gui
 
-    immapp.run(runner_params)
+    try:
+        immapp.run(runner_params)
+    except KeyboardInterrupt:
+        # Ctrl+C, or closing the terminal window directly when running from
+        # source -- Windows delivers that to the console process as a signal
+        # Python turns into KeyboardInterrupt, which aborts immapp.run()'s
+        # native render loop mid-frame and never reaches Hello ImGui's own
+        # graceful shutdown, so callbacks.before_exit above never fires.
+        # _before_exit() isn't just settings persistence -- it's also where
+        # remapper_engine.stop() lives, the stuck-key release path (see
+        # remapper.py's module docstring). Skipping it here would leave a
+        # latched Toggle or held Hold remap's injected key stuck at the OS
+        # level even after this process is gone -- SendInput key state
+        # outlives the process that injected it. Run it explicitly instead of
+        # letting the interrupt just unwind past it. Hello ImGui's own
+        # before_exit only fires through its normal shutdown path, so this
+        # can't double-call it -- a clean exit never raises here at all.
+        _before_exit(app_state)
 
 
 if __name__ == "__main__":
