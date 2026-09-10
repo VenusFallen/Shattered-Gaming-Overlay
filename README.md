@@ -28,13 +28,19 @@ Save named configs per game — Remapper, Macros, window targeting, and Overlay 
 
 A passive HUD that sits over the game: CPU/GPU load and temps, VRAM/RAM, FPS with 1% and 0.1% lows plus a live graph, an accessibility crosshair, and status indicators for what's currently active. It's a separate, click-through window — never a hook into the game's own renderer, and never something you can accidentally interact with mid-match.
 
+### Window targeting
+
+Point the app at one running process instead of leaving it global, and Remapper and Macros go inert the instant that process loses focus — nothing you've bound reaches the rest of your desktop while you're alt-tabbed out. The list refreshes on its own every couple seconds, or force it with the button.
+
+![Window targeting](assets/screenshots/window_select.png)
+
+*(Process list blurred for privacy — it's just whatever you have open at the time.)*
+
 ### Personalization
 
 Seven themes, from a plain dark default to a AAA-contrast mode for low vision, plus a reduce-motion switch.
 
 ![Settings](assets/screenshots/settings.png)
-
-Remapper and Macros can also be scoped to one running process — target a game and both go inert the instant it loses focus, so nothing you've bound reaches the rest of your desktop while you're alt-tabbed out.
 
 ## Why no driver
 
