@@ -50,7 +50,7 @@ def test_export_profile_payload_matches_profiles_json_shape(state):
     assert payload is not None
     assert payload["id"] == profile.id
     assert payload["name"] == "My Game"
-    assert payload["remapper"] == {"entries": []}
+    assert payload["remapper"] == {"entries": [], "auto_entries": []}
     assert payload["macros"] == {"macros": []}
     assert payload["window_select"] is None
     assert "overlay" in payload  # always present, restored unconditionally
@@ -234,14 +234,19 @@ def test_import_profile_blank_name_falls_back_to_default_label(state):
 
 
 def test_import_profile_full_roundtrip_preserves_remapper_and_macros(state):
-    from app_state import RemapEntry, RemapMode
+    from app_state import AutoToggleHoldEntry, RemapEntry, RemapMode
     from key_capture import KeyBind
 
     source = state.profiles.add_profile("Source")
     state.remapper.entries = [
         RemapEntry(
-            id="r1", source=KeyBind(vk_code=65, name="A"), destination=KeyBind(vk_code=66, name="B"),
-            enabled=True, mode=RemapMode.TOGGLE,
+            id="r1", name="Sprint Remap", source=KeyBind(vk_code=65, name="A"), destination=KeyBind(vk_code=66, name="B"),
+            enabled=True,
+        )
+    ]
+    state.remapper.auto_entries = [
+        AutoToggleHoldEntry(
+            id="a1", name="Crouch Hold", key=KeyBind(vk_code=67, name="C"), mode=RemapMode.HOLD, enabled=True,
         )
     ]
     # Non-default overlay value too -- makes sure the full export/import path
@@ -259,11 +264,15 @@ def test_import_profile_full_roundtrip_preserves_remapper_and_macros(state):
     with profiles._payload_lock:
         payload = profiles._payload_cache[imported.id]
     assert len(payload["entries"]) == 1
+    assert payload["entries"][0].name == "Sprint Remap"
     assert payload["entries"][0].source.name == "A"
     assert payload["entries"][0].destination.name == "B"
-    # Toggle mode (feature 4) survives the export/import round trip, not just
-    # the isolated _remap_entry_to_json/_from_json unit tests in
-    # test_remapper_toggle.py.
-    assert payload["entries"][0].mode == RemapMode.TOGGLE
+    # Auto Toggle/Hold entries (relocated Toggle mode + new Hold mode) survive
+    # the export/import round trip, not just the isolated _auto_entry_to_json/
+    # _from_json unit tests in test_remapper_auto_toggle_hold.py.
+    assert len(payload["auto_entries"]) == 1
+    assert payload["auto_entries"][0].name == "Crouch Hold"
+    assert payload["auto_entries"][0].key.name == "C"
+    assert payload["auto_entries"][0].mode == RemapMode.HOLD
     # show_fps_graph (feature 3) survives alongside it.
     assert payload["overlay"].stats_hud.show_fps_graph is False

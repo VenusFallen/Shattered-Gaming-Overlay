@@ -176,7 +176,12 @@ def main() -> None:
         stats_snapshot = stats_poller.get_snapshot()
         hud_overlay.update_stats(app_state.overlay.stats_hud, stats_snapshot)
         app_state.stats_fps_error = stats_snapshot.fps_error
-        remap_enabled_count = sum(1 for e in app_state.remapper.entries if e.enabled)
+        # Counts BOTH sections of the Remapper module -- standard remaps and
+        # Auto Toggle/Hold entries -- so the badge reflects the module as a
+        # whole, not just the older of the two lists.
+        remap_enabled_count = sum(1 for e in app_state.remapper.entries if e.enabled) + sum(
+            1 for a in app_state.remapper.auto_entries if a.enabled
+        )
         macro_enabled_count = sum(1 for m in app_state.macros.macros if m.enabled)
         hud_overlay.update_indicators(app_state.overlay.status_indicators, remap_enabled_count, macro_enabled_count)
         remapper_engine.update_snapshot(app_state.remapper, app_state.window_select)

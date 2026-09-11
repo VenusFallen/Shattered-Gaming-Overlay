@@ -81,8 +81,12 @@ def render(ctx: PanelContext) -> None:
     imgui.spacing()
 
     # --- bento row: remaps / macros / window target ---
-    remap_total = len(state.remapper.entries)
-    remap_enabled = sum(1 for e in state.remapper.entries if e.enabled)
+    # Counts both Remapper sections (standard remaps + Auto Toggle/Hold) --
+    # see main.py's matching status-indicator count for the same reasoning.
+    remap_total = len(state.remapper.entries) + len(state.remapper.auto_entries)
+    remap_enabled = sum(1 for e in state.remapper.entries if e.enabled) + sum(
+        1 for a in state.remapper.auto_entries if a.enabled
+    )
     remap_value = f"{remap_enabled} / {remap_total}" if remap_total else "0"
     remap_sub = "enabled" if remap_total else "none configured yet"
 

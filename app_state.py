@@ -8,7 +8,7 @@ side and sync into or out of this shape once per frame.
 
 from __future__ import annotations
 
-import itertools
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional, Tuple
@@ -16,11 +16,14 @@ from typing import List, Optional, Tuple
 from key_capture import KeyBind, UNBOUND
 from theme import hex_rgba
 
-_id_counter = itertools.count(1)
-
 
 def _next_id(prefix: str) -> str:
-    return f"{prefix}-{next(_id_counter)}"
+    # uuid4, not a process-lifetime counter -- a counter restarts at 1 every
+    # launch, so ids collide across sessions (real bug: two profiles both
+    # landing on "profile-1" after separate app runs caused duplicate-id
+    # corruption in profiles.json). Truncated to 8 hex chars: collision odds
+    # are irrelevant at this app's scale, and it keeps profiles.json readable.
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
 # ---------------------------------------------------------------------------
@@ -35,24 +38,49 @@ class RemapMode(Enum):
 
 @dataclass
 class RemapEntry:
+    """A plain 1:1 remap: destination mirrors source down/up, always, at
+    whatever frequency the source is pressed. No mode concept -- Hold/Toggle
+    used to live here (RemapEntry.mode) but that's been relocated to
+    AutoToggleHoldEntry below, since a self-acting toggle/hold key never
+    needed the source/destination pair to begin with."""
+
     id: str
     source: KeyBind = field(default_factory=lambda: UNBOUND)
     destination: KeyBind = field(default_factory=lambda: UNBOUND)
     enabled: bool = True
-    # Hold (default): destination mirrors source down/up 1:1. Toggle: first
-    # press latches destination down, next press releases it; source release
-    # is a no-op. New field -- absent/unparsed on disk always resolves to
-    # HOLD (see profiles.py's _remap_entry_from_json), never silently
-    # changes an existing saved binding's behavior.
-    mode: RemapMode = RemapMode.HOLD
+    # Cosmetic only -- never read by matching/injection. Blank falls back to
+    # showing the bound keys, same as before this field existed.
+    name: str = ""
+
+
+@dataclass
+class AutoToggleHoldEntry:
+    """One key acting on itself: Toggle latches it down on the first
+    physical press and releases it on the next (source release is a no-op).
+    Hold taps it (down, 100ms, up) on BOTH the physical press and release
+    edges, turning a game's toggle-only action into hold-to-use from the
+    player's side. See remapper.py for the actual state machines -- this is
+    pure UI/persisted config, same split as RemapEntry above."""
+
+    id: str
+    name: str = ""
+    key: KeyBind = field(default_factory=lambda: UNBOUND)
+    mode: RemapMode = RemapMode.TOGGLE
+    enabled: bool = True
 
 
 @dataclass
 class RemapperState:
     entries: List[RemapEntry] = field(default_factory=list)
+    auto_entries: List[AutoToggleHoldEntry] = field(default_factory=list)
     # which entry/field is currently mid-capture ("source" | "destination"), else None
     capturing_entry_id: Optional[str] = None
     capturing_field: Optional[str] = None
+    # which Auto Toggle/Hold entry (if any) is currently mid-capture for its
+    # single "key" field -- separate from capturing_entry_id/capturing_field
+    # above so starting a capture in one section doesn't get misread as a
+    # capture belonging to the other.
+    capturing_auto_id: Optional[str] = None
 
     def add_entry(self) -> RemapEntry:
         entry = RemapEntry(id=_next_id("remap"))
@@ -64,6 +92,16 @@ class RemapperState:
         if self.capturing_entry_id == entry_id:
             self.capturing_entry_id = None
             self.capturing_field = None
+
+    def add_auto_entry(self) -> AutoToggleHoldEntry:
+        entry = AutoToggleHoldEntry(id=_next_id("auto"))
+        self.auto_entries.append(entry)
+        return entry
+
+    def remove_auto_entry(self, entry_id: str) -> None:
+        self.auto_entries = [e for e in self.auto_entries if e.id != entry_id]
+        if self.capturing_auto_id == entry_id:
+            self.capturing_auto_id = None
 
 
 # ---------------------------------------------------------------------------

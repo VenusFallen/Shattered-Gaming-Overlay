@@ -1,7 +1,14 @@
-"""panels/remapper.py -- Remapper panel: source key/button -> destination
-key/button pairs. Purely UI state (app_state.RemapEntry list); no matching
-or SendInput happens here -- that's the root-level remapper.py, which reads
-this state each frame via update_snapshot().
+"""panels/remapper.py -- Remapper panel: two independent sections.
+
+Standard Remapping: plain 1:1 source -> destination key/button pairs
+(app_state.RemapEntry) -- destination always mirrors source down/up, no mode
+concept. Auto Toggle/Hold: single-key entries that change how that key's OWN
+presses land (app_state.AutoToggleHoldEntry) -- Toggle latches it down/up
+across presses, Hold converts a game's toggle-only action into hold-to-use.
+
+Purely UI state; no matching or SendInput happens here -- that's the
+root-level remapper.py, which reads this state each frame via
+update_snapshot().
 """
 
 from __future__ import annotations
@@ -10,11 +17,20 @@ from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
 import widgets
-from app_state import RemapEntry, RemapMode
+from app_state import AutoToggleHoldEntry, RemapEntry, RemapMode
 from key_capture import KeyBind
 from panel_context import PanelContext
 
 _MODE_LABELS = [m.value for m in RemapMode]
+
+_NAME_FIELD_WIDTH = 140.0
+_SPACER = (20.0, 0.0)
+
+
+def _spacer() -> None:
+    imgui.same_line()
+    imgui.dummy(imgui.ImVec2(*_SPACER))
+    imgui.same_line()
 
 
 def _handle_capture(ctx: PanelContext, entry: RemapEntry, field_name: str) -> None:
@@ -37,25 +53,51 @@ def _handle_capture(ctx: PanelContext, entry: RemapEntry, field_name: str) -> No
 
     clicked = widgets.bind_button(ctx.theme, f"{entry.id}-{field_name}", current.name, is_target)
     if clicked and not is_target:
-        # Starting a new capture always wins -- only one can be active.
+        # Starting a new capture always wins -- only one can be active
+        # across BOTH sections of this panel.
         ctx.capture.begin_capture()
         state.capturing_entry_id = entry.id
         state.capturing_field = field_name
+        state.capturing_auto_id = None
 
 
-def render(ctx: PanelContext) -> None:
+def _handle_auto_capture(ctx: PanelContext, entry: AutoToggleHoldEntry) -> None:
+    """Draw the bind button for an Auto Toggle/Hold entry's single `key`
+    field. Mirrors `_handle_capture` above but against `capturing_auto_id`,
+    which is tracked separately so a capture started here doesn't get
+    misread as belonging to a standard remap entry's source/destination
+    (and vice versa)."""
+    state = ctx.state.remapper
+    is_target = state.capturing_auto_id == entry.id
+
+    if is_target:
+        result = ctx.capture.poll_result()
+        if result is not None:
+            entry.key = result
+            state.capturing_auto_id = None
+        elif imgui.is_key_pressed(imgui.Key.escape):
+            ctx.capture.cancel_capture()
+            state.capturing_auto_id = None
+
+    clicked = widgets.bind_button(ctx.theme, f"{entry.id}-key", entry.key.name, is_target)
+    if clicked and not is_target:
+        ctx.capture.begin_capture()
+        state.capturing_auto_id = entry.id
+        state.capturing_entry_id = None
+        state.capturing_field = None
+
+
+def _render_standard_section(ctx: PanelContext) -> None:
     theme = ctx.theme
     state = ctx.state.remapper
 
-    imgui.text(f"{fa.ICON_FA_KEYBOARD}  Remapper")
+    widgets.section_title("Remapping")
     widgets.muted_text(theme, "Remap any key or mouse button to another. A remap also arms macros/toggles bound to its destination.")
     imgui.spacing()
 
     if imgui.button(f"{fa.ICON_FA_PLUS}  Add Remap"):
         state.add_entry()
 
-    imgui.spacing()
-    imgui.separator()
     imgui.spacing()
 
     if not state.entries:
@@ -71,30 +113,20 @@ def render(ctx: PanelContext) -> None:
                 theme, "Enabled", entry.enabled, ctx.state.settings.reduce_motion
             )
 
-            imgui.same_line()
-            imgui.dummy(imgui.ImVec2(20, 0))
-            imgui.same_line()
+            _spacer()
+            imgui.set_next_item_width(_NAME_FIELD_WIDTH)
+            _, entry.name = imgui.input_text("##name", entry.name)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Optional label -- purely cosmetic.")
 
+            _spacer()
             _handle_capture(ctx, entry, "source")
             imgui.same_line()
             imgui.text(fa.ICON_FA_ARROW_RIGHT)
             imgui.same_line()
             _handle_capture(ctx, entry, "destination")
 
-            imgui.same_line()
-            imgui.dummy(imgui.ImVec2(20, 0))
-            imgui.same_line()
-            mode_idx = list(RemapMode).index(entry.mode)
-            imgui.set_next_item_width(110)
-            changed, mode_idx = imgui.combo("##mode", mode_idx, _MODE_LABELS)
-            if changed:
-                entry.mode = list(RemapMode)[mode_idx]
-            if imgui.is_item_hovered():
-                imgui.set_tooltip("Hold: destination follows source down/up.\nToggle: first press latches destination down, next press releases it. Release does nothing.")
-
-            imgui.same_line()
-            imgui.dummy(imgui.ImVec2(20, 0))
-            imgui.same_line()
+            _spacer()
             if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
                 remove_id = entry.id
 
@@ -106,3 +138,81 @@ def render(ctx: PanelContext) -> None:
 
     if remove_id is not None:
         state.remove_entry(remove_id)
+
+
+def _render_auto_section(ctx: PanelContext) -> None:
+    theme = ctx.theme
+    state = ctx.state.remapper
+
+    widgets.section_title("Auto Toggle/Hold")
+    widgets.muted_text(
+        theme,
+        "One key acting on itself. Toggle: first press latches it down, next press releases it.\n"
+        "Hold: taps the key on both press and release, turning a toggle-only game action into hold-to-use.",
+    )
+    imgui.spacing()
+
+    if imgui.button(f"{fa.ICON_FA_PLUS}  Add Auto Toggle/Hold"):
+        state.add_auto_entry()
+
+    imgui.spacing()
+
+    if not state.auto_entries:
+        widgets.muted_text(theme, "No Auto Toggle/Hold entries yet.")
+        return
+
+    remove_id = None
+    for entry in state.auto_entries:
+        with widgets.card(theme, f"auto-{entry.id}", size=(0, 0)):
+            imgui.push_id(entry.id)
+
+            changed, entry.enabled = widgets.labeled_toggle(
+                theme, "Enabled", entry.enabled, ctx.state.settings.reduce_motion
+            )
+
+            _spacer()
+            imgui.set_next_item_width(_NAME_FIELD_WIDTH)
+            _, entry.name = imgui.input_text("##name", entry.name)
+            if imgui.is_item_hovered():
+                imgui.set_tooltip("Optional label -- purely cosmetic.")
+
+            _spacer()
+            _handle_auto_capture(ctx, entry)
+
+            _spacer()
+            mode_idx = list(RemapMode).index(entry.mode)
+            imgui.set_next_item_width(110)
+            changed, mode_idx = imgui.combo("##mode", mode_idx, _MODE_LABELS)
+            if changed:
+                entry.mode = list(RemapMode)[mode_idx]
+            if imgui.is_item_hovered():
+                imgui.set_tooltip(
+                    "Toggle: first press latches the key down, next press releases it. Release does nothing.\n"
+                    "Hold: press taps the key once, release taps it again -- each tap is a clean down/up."
+                )
+
+            _spacer()
+            if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
+                remove_id = entry.id
+
+            if not entry.enabled:
+                widgets.status_badge(theme, "neutral", "Disabled")
+
+            imgui.pop_id()
+        imgui.spacing()
+
+    if remove_id is not None:
+        state.remove_auto_entry(remove_id)
+
+
+def render(ctx: PanelContext) -> None:
+    imgui.text(f"{fa.ICON_FA_KEYBOARD}  Remapper")
+    imgui.spacing()
+
+    _render_standard_section(ctx)
+
+    imgui.spacing()
+    imgui.separator()
+    imgui.spacing()
+
+    _render_auto_section(ctx)

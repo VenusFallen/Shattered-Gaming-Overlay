@@ -1,51 +1,73 @@
-"""remapper.py -- matches live keyboard/mouse-button events against
-`AppState.remapper.entries` (source -> destination), suppresses the matched
-physical event, and injects the destination via `input_inject`. Pure
-user-mode: `input_hooks.HookManager` for capture, `input_inject.send_key` /
-`send_mouse_button` for injection -- no driver, no ViGEm, no game-process
-access.
+"""remapper.py -- two independent, always-on matchers against
+`AppState.remapper` state, both driven off the same live keyboard/mouse-
+button hook. Pure user-mode: `input_hooks.HookManager` for capture,
+`input_inject.send_key` / `send_mouse_button` for injection -- no driver, no
+ViGEm, no game-process access.
 
-A remap also registers as its destination for the rest of the app's own
-trigger matching (so a remapped key correctly arms macros bound to that
-destination), not just re-emitting the raw OS event. Every physical
-keyboard/mouse-button event is published as a normalized
-`EffectiveInputEvent`: destination identity + `from_remap=True` if it matched
-an enabled remap entry, original identity + `from_remap=False` otherwise.
-`macro_engine.py` subscribes via `add_effective_listener` instead of
-installing its own hook, so there's exactly one place a remap's destination
-becomes visible to the rest of the app's trigger matching.
+**Standard Remapping** (`RemapperState.entries`, `RemapEntry`): a plain 1:1
+source -> destination remap. Destination mirrors source down/up, always, at
+whatever frequency the source is pressed -- no mode concept. A remap also
+registers as its destination for the rest of the app's own trigger matching
+(so a remapped key correctly arms macros bound to that destination), not
+just re-emitting the raw OS event.
 
-Two per-entry modes (`RemapEntry.mode`): Hold (default) mirrors source
-down/up onto destination 1:1, exactly as above. Toggle latches destination
-down on the first physical source press and up on the next; source release
-is a no-op (only presses are published/injected in Toggle mode -- see
-`_handle_toggle`). Toggle's on/off latch is tracked per-entry-id in
-`_toggle_on` (hook-thread AND Companion-thread touch this, so it's always
-read/written under `_lock`, unlike the Hold-only `_active_remaps`).
+**Auto Toggle/Hold** (`RemapperState.auto_entries`, `AutoToggleHoldEntry`):
+a single key acting on itself -- there's no destination, since the point is
+changing how the key's OWN presses land, not remapping it elsewhere.
+  - Toggle: first physical press latches the key down and leaves it down,
+    next physical press sends it up. Physical release is a no-op. This is
+    the same latch state machine standard RemapEntry.mode used to implement
+    (`_handle_toggle`, now `_handle_auto_toggle`) -- relocated here, not
+    reimplemented.
+  - Hold (new): on physical press, tap the key (down, wait
+    `_AUTO_HOLD_TAP_GAP_MS`, up). On physical release, tap it again,
+    independently. This converts a game's own toggle-only action into
+    something that feels like hold-to-use from the player's side, using the
+    press and release edges as two independent tap triggers rather than
+    mirroring a held state. The delayed "up" is NOT slept inline on the hook
+    callback thread -- Windows enforces a low-level-hook responsiveness
+    timeout (~300ms, LowLevelHooksTimeout) and will silently unhook a
+    callback that blocks too long, and this needs to do it on both edges of
+    every gesture. Instead the hook callback injects the "down" and hands the
+    delayed "up" to a short-lived `threading.Timer` (`self._timer_factory`,
+    swappable in tests), then returns immediately.
 
-Stuck-key prevention: a Toggle latched "on", or a Hold remap whose physical
-source is still down, both inject a real held key/button in whatever app has
-focus, so every path that can leave one behind forces its release first.
-`_force_release_pending()` is the release primitive for both; it's called
-from `stop()` (app exit/engine stop) and from `_handle()` on a gate
-open->closed transition (window-filter focus loss -- see below). Gate-close
-matters for Hold too, not just Toggle: `_handle()` returns early while the
-gate is closed, before Hold's own release-on-physical-up path ever runs, so
-without this a Hold remap held through a focus loss would stay stuck if the
-user released the physical key while still unfocused (a real gap, fixed
+If a physical vk matches BOTH a standard remap source and an Auto Toggle/
+Hold key, the standard remap wins (`_mapping` is checked first) -- an
+unusual double-binding, but deterministic rather than undefined.
+
+Every physical keyboard/mouse-button event is published as a normalized
+`EffectiveInputEvent`: the synthesized identity + `from_remap=True` if it
+matched an enabled entry in either section, original identity + `from_remap
+=False` otherwise. `macro_engine.py` subscribes via `add_effective_listener`
+instead of installing its own hook, so there's exactly one place a remap's
+destination (or an Auto entry's own key) becomes visible to the rest of the
+app's trigger matching.
+
+Stuck-key prevention: a Toggle latched "on", a Hold-mode standard remap
+whose physical source is still down, or an Auto Hold entry with a tap still
+pending, all inject (or are about to inject) a real held/about-to-be-
+released key/button in whatever app has focus, so every path that can leave
+one behind forces its release first. `_force_release_pending()` is the
+release primitive for all three; it's called from `stop()` (app exit/engine
+stop) and from `_handle()` on a gate open->closed transition (window-filter
+focus loss -- see below). Gate-close matters for the standard Hold remap
+too, not just Toggle/Auto-Hold: `_handle()` returns early while the gate is
+closed, before the standard remap's own release-on-physical-up path ever
+runs, so without this a held remap through a focus loss would stay stuck if
+the user released the physical key while still unfocused (a real gap, fixed
 2026-08-31 -- `_force_release_pending()` was Toggle-only until then).
-`update_snapshot()` separately force-releases any individual toggle-on entry
-that's been removed/disabled/switched off Toggle mode/had its destination
-edited since the last frame (covers profile switches too: apply_profile()
-just replaces `AppState.remapper.entries` wholesale, so a switch to a profile
-without that entry's id looks identical to a delete here -- no separate
-profile-switch hook needed); Hold has no equivalent per-entry diff since it
-has no persistent latch to invalidate -- ordinary map rebuilding already
-stops mirroring a removed/disabled entry's source. A same-id/same-destination
-edit to only a Toggle entry's *source* key intentionally does NOT force a
-release -- the injected destination key's state isn't affected by what
-triggers it, so tearing it down there would just be a spurious extra
-keystroke.
+`update_snapshot()` separately force-releases any individual Toggle/Auto-Hold
+entry that's been removed/disabled/switched mode/had its key edited since
+the last frame (covers profile switches too: apply_profile() just replaces
+`AppState.remapper.entries`/`.auto_entries` wholesale, so a switch to a
+profile without that entry's id looks identical to a delete here -- no
+separate profile-switch hook needed); the standard Hold remap has no
+equivalent per-entry diff since it has no persistent latch to invalidate --
+ordinary map rebuilding already stops mirroring a removed/disabled entry's
+source. A same-id/same-key edit to only a Toggle/Auto-Hold entry's OTHER
+cosmetic field (e.g. name) intentionally does NOT force a release -- the
+injected key's state isn't affected by anything but its own identity.
 
 Window-filter gating: when a process is targeted
 (`WindowSelectState.selected` set), match/inject goes inert the instant that
@@ -81,8 +103,9 @@ from key_capture import KeyBind, is_mouse_vk, keybind_vk_to_mouse_button, mouse_
 
 # Avoid a hard import-time dependency on app_state beyond type hints, so this
 # module stays importable/testable without a live hook. RemapMode is used at
-# runtime (mode branch in _handle()), not just for type hints, but the
-# fallback below still keeps a live-hook-free import from raising.
+# runtime (Auto Toggle/Hold's mode branch in _handle()), not just for type
+# hints, but the fallback below still keeps a live-hook-free import from
+# raising.
 try:
     from app_state import RemapMode
 except Exception:  # pragma: no cover
@@ -94,14 +117,20 @@ except Exception:  # pragma: no cover
     RemapperState = object  # type: ignore
     WindowSelectState = object  # type: ignore
 
+# Fixed gap between the synthesized down and up of one Auto Hold tap. Not
+# user-configurable -- per design, this exists specifically to prevent
+# misfires from input lag, not to be tuned per key.
+_AUTO_HOLD_TAP_GAP_MS = 100
+
 
 @dataclass(frozen=True)
 class EffectiveInputEvent:
-    """A normalized post-remap identity: a remap's destination if the
-    physical event matched an enabled entry, else the original physical
-    identity. `vk_code` uses key_capture.py's keyboard-vk / mouse-pseudo-vk
-    scheme uniformly, so consumers don't need to care whether it originated
-    from a keyboard or a mouse button."""
+    """A normalized post-remap identity: a remap's destination (or an Auto
+    Toggle/Hold entry's own key) if the physical event matched an enabled
+    entry, else the original physical identity. `vk_code` uses
+    key_capture.py's keyboard-vk / mouse-pseudo-vk scheme uniformly, so
+    consumers don't need to care whether it originated from a keyboard or a
+    mouse button."""
 
     vk_code: int
     up: bool
@@ -113,23 +142,50 @@ class EffectiveInputEvent:
 EffectiveListener = Callable[[EffectiveInputEvent], None]
 
 
+def _make_timer(interval_sec: float, fn: Callable[[], None]) -> threading.Timer:
+    timer = threading.Timer(interval_sec, fn)
+    timer.daemon = True
+    return timer
+
+
 @dataclass(frozen=True)
 class _MappingEntry:
-    """One live, enabled, fully-bound remap -- what `_mapping` stores per
-    source vk. Carries `entry_id`/`mode` alongside the destination (unlike
-    the old bare-`KeyBind` mapping) because Toggle's per-entry on/off latch
-    needs a stable identity independent of the source vk, which can be
-    rebound without disturbing an already-latched toggle."""
+    """One live, enabled, fully-bound standard remap -- what `_mapping`
+    stores per source vk. Carries `entry_id` alongside the destination
+    (unlike a bare `KeyBind`) purely so a same-source rebind can be diffed
+    the same way Auto entries are, if that's ever needed -- not otherwise
+    used today since standard remaps have no persistent latch to clean up."""
 
     entry_id: str
     destination: KeyBind
+
+
+@dataclass(frozen=True)
+class _AutoMappingEntry:
+    """One live, enabled, fully-bound Auto Toggle/Hold entry -- what
+    `_auto_mapping` stores per key vk. `key` doubles as both the match
+    target and the injected identity, since these entries act on themselves."""
+
+    entry_id: str
+    key: KeyBind
     mode: "RemapMode"
 
 
-# (enabled, mode, destination) as of the last update_snapshot() call, keyed
-# by entry id -- what update_snapshot()'s toggle-cleanup diff compares
-# against to notice an edit/disable/removal since the previous frame.
-_EntrySnap = Tuple[bool, "RemapMode", KeyBind]
+@dataclass
+class _PendingHoldTap:
+    """One Auto Hold entry's in-flight tap: the timer that will send the
+    delayed "up", and the key it'll send it for (captured at tap-start, not
+    re-looked-up later, so a mid-tap config edit can't release the wrong
+    key -- same principle as Toggle's `_toggle_on` below)."""
+
+    timer: threading.Timer
+    key: KeyBind
+
+
+# (enabled, key) as of the last update_snapshot() call, keyed by entry id --
+# what update_snapshot()'s Toggle/Hold cleanup diffs compare against to
+# notice an edit/mode-switch/disable/removal since the previous frame.
+_AutoEntrySnap = Tuple[bool, "RemapMode", KeyBind]
 
 
 class RemapperEngine:
@@ -154,24 +210,37 @@ class RemapperEngine:
         # targeted (gate always open); the has-focus check itself is
         # deliberately NOT part of this snapshot -- see module docstring.
         self._mapping: Dict[int, _MappingEntry] = {}
+        self._auto_mapping: Dict[int, _AutoMappingEntry] = {}
         self._target_pid: Optional[int] = None
 
         # Hook-thread-only: tracks which source identities are currently
-        # suppressed-and-held (Hold mode only) so a key held across a live
-        # config edit still releases the correct destination.
+        # suppressed-and-held (standard remap only) so a key held across a
+        # live config edit still releases the correct destination.
         self._active_remaps: Dict[int, KeyBind] = {}
 
-        # Toggle mode's on/off latch: entry id -> destination currently held
-        # down by that entry's toggle. Both the hook thread (press flips it)
-        # and the Companion thread (update_snapshot()'s cleanup diff) touch
-        # this, so it's always read/written under `_lock` -- unlike
-        # `_active_remaps` above, which is hook-thread-only.
+        # Auto Toggle's on/off latch: entry id -> key currently held down by
+        # that entry's toggle. Both the hook thread (press flips it) and the
+        # Companion thread (update_snapshot()'s cleanup diff) touch this, so
+        # it's always read/written under `_lock` -- unlike `_active_remaps`
+        # above, which is hook-thread-only.
         self._toggle_on: Dict[str, KeyBind] = {}
+
+        # Auto Hold's in-flight taps: entry id -> pending timer + key. Same
+        # multi-thread touch pattern as `_toggle_on` (hook thread schedules/
+        # supersedes, the timer's own thread completes it, the Companion
+        # thread's cleanup diff can force-drain it) -- always under `_lock`.
+        self._hold_pending: Dict[str, _PendingHoldTap] = {}
+
+        # Swappable so tests can control tap timing without a real sleep --
+        # see tests/test_remapper_auto_hold.py. Defaults to a real
+        # daemonized threading.Timer.
+        self._timer_factory: Callable[[float, Callable[[], None]], threading.Timer] = _make_timer
 
         # Hook-thread-only: last-evaluated window-filter gate state, so
         # `_handle()` can notice an open->closed transition (target process
-        # just lost focus) and force-release any latched toggle immediately,
-        # even with the Companion window minimized -- see module docstring.
+        # just lost focus) and force-release any latched toggle/pending hold
+        # immediately, even with the Companion window minimized -- see
+        # module docstring.
         self._gate_open = True
 
         self._listeners: List[EffectiveListener] = []
@@ -193,7 +262,7 @@ class RemapperEngine:
     def stop(self) -> None:
         if not self._started:
             return
-        self._force_release_pending()  # never leave a latched Toggle or held Hold remap stuck on exit
+        self._force_release_pending()  # never leave a latched Toggle, pending Hold tap, or held remap stuck on exit
         self._hook.stop()
         self._started = False
         self._gate_open = True
@@ -207,7 +276,7 @@ class RemapperEngine:
 
     def update_snapshot(self, remapper_state: "RemapperState", window_select_state: "WindowSelectState") -> None:
         """Call once per Companion-window frame. KeyBind is a frozen
-        dataclass, so storing destination references directly is safe to
+        dataclass, so storing destination/key references directly is safe to
         read from the hook thread without copying further.
 
         Only hands off *which* pid is targeted (or None), not whether it
@@ -215,41 +284,57 @@ class RemapperEngine:
         section for why that check is evaluated live in `_handle()` instead
         of snapshotted here.
 
-        Also runs the Toggle-mode cleanup diff: any entry id currently
-        latched on in `_toggle_on` that no longer matches (removed,
-        disabled, switched off Toggle, or its destination changed) since the
-        last call gets force-released -- see module docstring's "Toggle
-        stuck-key prevention" section."""
+        Also runs the Auto Toggle/Hold cleanup diffs: any entry id currently
+        latched on in `_toggle_on`, or with a tap pending in `_hold_pending`,
+        that no longer matches (removed, disabled, switched mode, or its key
+        changed) since the last call gets force-released/cancelled -- see
+        module docstring's "Stuck-key prevention" section."""
         mapping: Dict[int, _MappingEntry] = {}
-        entry_snapshot: Dict[str, _EntrySnap] = {}
         for entry in remapper_state.entries:
-            entry_snapshot[entry.id] = (entry.enabled, entry.mode, entry.destination)
             if not entry.enabled:
                 continue
             if not entry.source.is_bound or not entry.destination.is_bound:
                 continue
-            mapping.setdefault(
-                entry.source.vk_code,
-                _MappingEntry(entry_id=entry.id, destination=entry.destination, mode=entry.mode),
-            )
+            mapping.setdefault(entry.source.vk_code, _MappingEntry(entry_id=entry.id, destination=entry.destination))
+
+        auto_mapping: Dict[int, _AutoMappingEntry] = {}
+        auto_snapshot: Dict[str, _AutoEntrySnap] = {}
+        for auto in remapper_state.auto_entries:
+            auto_snapshot[auto.id] = (auto.enabled, auto.mode, auto.key)
+            if not auto.enabled or not auto.key.is_bound:
+                continue
+            auto_mapping.setdefault(auto.key.vk_code, _AutoMappingEntry(entry_id=auto.id, key=auto.key, mode=auto.mode))
 
         selected = window_select_state.selected
         target_pid = selected.pid if selected is not None else None
 
-        to_release: List[KeyBind] = []
+        to_release_toggle: List[KeyBind] = []
+        to_release_hold: List[_PendingHoldTap] = []
         with self._lock:
-            for entry_id, dest in list(self._toggle_on.items()):
-                snap = entry_snapshot.get(entry_id)
-                still_valid = snap is not None and snap[0] and snap[1] == RemapMode.TOGGLE and snap[2] == dest
+            for entry_id, key in list(self._toggle_on.items()):
+                snap = auto_snapshot.get(entry_id)
+                still_valid = snap is not None and snap[0] and RemapMode is not None and snap[1] == RemapMode.TOGGLE and snap[2] == key
                 if not still_valid:
-                    to_release.append(dest)
+                    to_release_toggle.append(key)
                     del self._toggle_on[entry_id]
 
+            for entry_id, pending in list(self._hold_pending.items()):
+                snap = auto_snapshot.get(entry_id)
+                still_valid = snap is not None and snap[0] and RemapMode is not None and snap[1] == RemapMode.HOLD and snap[2] == pending.key
+                if not still_valid:
+                    to_release_hold.append(pending)
+                    del self._hold_pending[entry_id]
+
             self._mapping = mapping
+            self._auto_mapping = auto_mapping
             self._target_pid = target_pid
 
-        for dest in to_release:
-            self._release_dest(dest)
+        for pending in to_release_hold:
+            pending.timer.cancel()
+        for key in to_release_toggle:
+            self._release_dest(key)
+        for pending in to_release_hold:
+            self._release_dest(pending.key)
 
     # ------------------------------------------------------------------
     # Hook callbacks (hook thread)
@@ -269,6 +354,7 @@ class RemapperEngine:
     def _handle(self, vk: int, up: bool, name: str, time_ms: int) -> Optional[bool]:
         with self._lock:
             mapping = self._mapping
+            auto_mapping = self._auto_mapping
             target_pid = self._target_pid
 
         # Evaluated live, every event -- see module docstring's
@@ -279,11 +365,12 @@ class RemapperEngine:
             self._gate_open = gate_open
             if not gate_open:
                 # Just lost focus on the targeted process -- force-release any
-                # latched Toggle before going inert, so it doesn't sit "held"
-                # in whatever now has focus. Checked here (not just
-                # update_snapshot()) because this fires on ANY system-wide
-                # key/mouse-button event -- reliable even while the Companion
-                # window is minimized, unlike the per-frame path.
+                # latched Toggle/pending Hold tap before going inert, so
+                # nothing sits "held" (or fires late) in whatever now has
+                # focus. Checked here (not just update_snapshot()) because
+                # this fires on ANY system-wide key/mouse-button event --
+                # reliable even while the Companion window is minimized,
+                # unlike the per-frame path.
                 self._force_release_pending()
 
         if not gate_open:
@@ -293,73 +380,126 @@ class RemapperEngine:
 
         entry = mapping.get(vk)
 
-        if entry is None:
-            # Not currently a remap source. Still check for a stale-but-active
-            # Hold remap on release, in case entries changed while the key
-            # was held. (Toggle entries never populate `_active_remaps` --
-            # their release is a no-op, handled below.)
-            active_dest = self._active_remaps.pop(vk, None) if up else None
-            if active_dest is None:
-                self._publish(EffectiveInputEvent(vk_code=vk, up=up, name=name, from_remap=False, time_ms=time_ms))
-                return None
+        if entry is not None:
+            # Standard remap: mirror source down/up onto destination 1:1.
+            dest = entry.destination
+            if up:
+                self._active_remaps.pop(vk, None)
+            else:
+                self._active_remaps[vk] = dest
+
+            self._inject(dest, up)
+            self._publish(EffectiveInputEvent(vk_code=dest.vk_code, up=up, name=dest.name, from_remap=True, time_ms=time_ms))
+            return True  # suppress the original physical event
+
+        # Not currently a remap source. Still check for a stale-but-active
+        # standard remap on release, in case entries changed while the key
+        # was held.
+        active_dest = self._active_remaps.pop(vk, None) if up else None
+        if active_dest is not None:
             self._inject(active_dest, up)
             self._publish(
                 EffectiveInputEvent(vk_code=active_dest.vk_code, up=up, name=active_dest.name, from_remap=True, time_ms=time_ms)
             )
             return True
 
-        if RemapMode is not None and entry.mode == RemapMode.TOGGLE:
-            return self._handle_toggle(entry, up, time_ms)
+        auto_entry = auto_mapping.get(vk)
+        if auto_entry is not None:
+            if RemapMode is not None and auto_entry.mode == RemapMode.TOGGLE:
+                return self._handle_auto_toggle(auto_entry, up, time_ms)
+            return self._handle_auto_hold(auto_entry, up, time_ms)
 
-        # Hold mode: mirror source down/up onto destination 1:1.
-        dest = entry.destination
-        if up:
-            self._active_remaps.pop(vk, None)
-        else:
-            self._active_remaps[vk] = dest
+        self._publish(EffectiveInputEvent(vk_code=vk, up=up, name=name, from_remap=False, time_ms=time_ms))
+        return None
 
-        self._inject(dest, up)
-        self._publish(EffectiveInputEvent(vk_code=dest.vk_code, up=up, name=dest.name, from_remap=True, time_ms=time_ms))
-        return True  # suppress the original physical event
-
-    def _handle_toggle(self, entry: _MappingEntry, up: bool, time_ms: int) -> bool:
-        """Only presses matter in Toggle mode -- release is a fully-absorbed
-        no-op (suppressed, not published, not injected). First press latches
-        destination down; the next press releases it, using the destination
-        recorded at latch time (not a fresh lookup) so a mid-hold config edit
-        can't release the wrong key -- `update_snapshot()` force-releases any
-        entry whose destination actually changes while latched anyway."""
+    def _handle_auto_toggle(self, entry: _AutoMappingEntry, up: bool, time_ms: int) -> bool:
+        """Only presses matter -- release is a fully-absorbed no-op
+        (suppressed, not published, not injected). First press latches the
+        key down; the next press releases it, using the key recorded at
+        latch time (not a fresh lookup) so a mid-hold config edit can't
+        release the wrong key -- `update_snapshot()` force-releases any
+        entry whose key actually changes while latched anyway."""
         if up:
             return True  # suppress; physical release does nothing in Toggle mode
 
         with self._lock:
-            current_dest = self._toggle_on.get(entry.entry_id)
-            if current_dest is None:
-                self._toggle_on[entry.entry_id] = entry.destination
-                dest, now_up = entry.destination, False
+            current_key = self._toggle_on.get(entry.entry_id)
+            if current_key is None:
+                self._toggle_on[entry.entry_id] = entry.key
+                key, now_up = entry.key, False
             else:
                 del self._toggle_on[entry.entry_id]
-                dest, now_up = current_dest, True
+                key, now_up = current_key, True
 
-        self._inject(dest, now_up)
-        self._publish(EffectiveInputEvent(vk_code=dest.vk_code, up=now_up, name=dest.name, from_remap=True, time_ms=time_ms))
+        self._inject(key, now_up)
+        self._publish(EffectiveInputEvent(vk_code=key.vk_code, up=now_up, name=key.name, from_remap=True, time_ms=time_ms))
         return True
 
+    def _handle_auto_hold(self, entry: _AutoMappingEntry, up: bool, time_ms: int) -> bool:
+        """Fires an identical down-wait-up tap on BOTH the press and release
+        edges (see module docstring) -- converts a game's toggle-only action
+        into hold-to-use from the player's side. `up` isn't otherwise used:
+        both edges do the exact same thing.
+
+        Any tap already pending for this entry is cancelled and force-
+        completed first, so two fast edges (e.g. a quick tap of the physical
+        key, faster than `_AUTO_HOLD_TAP_GAP_MS`) never leave an orphaned
+        timer or an overlapping down state behind."""
+        with self._lock:
+            old = self._hold_pending.pop(entry.entry_id, None)
+        if old is not None:
+            old.timer.cancel()
+            self._release_dest(old.key)
+
+        self._inject(entry.key, up=False)
+        self._publish(EffectiveInputEvent(vk_code=entry.key.vk_code, up=False, name=entry.key.name, from_remap=True, time_ms=time_ms))
+
+        entry_id = entry.entry_id
+        # `timer` is captured by the lambda AFTER assignment below, not by
+        # value now -- by the time the callback actually runs, the local
+        # `timer` name in this call's scope already points at the right
+        # object. Passed through explicitly (not just `entry_id`) so a late
+        # fire from an already-superseded tap (see the `old` handling above)
+        # can tell itself apart from the tap that superseded it -- both would
+        # share the same entry_id, and entry_id alone being present in
+        # `_hold_pending` isn't proof it's THIS particular timer's tap.
+        timer = self._timer_factory(_AUTO_HOLD_TAP_GAP_MS / 1000.0, lambda: self._finish_hold_tap(entry_id, timer))
+        with self._lock:
+            self._hold_pending[entry_id] = _PendingHoldTap(timer=timer, key=entry.key)
+        timer.start()
+        return True  # suppress the original physical event
+
+    def _finish_hold_tap(self, entry_id: str, timer: threading.Timer) -> None:
+        """Timer completion callback -- runs on the timer's own thread, NOT
+        the hook thread. Checks identity (both the entry id AND that this is
+        still the exact timer registered for it) before acting: cancel()
+        can't guarantee a callback that already started won't still run, and
+        a same-id tap can get superseded by a new one before this fires."""
+        with self._lock:
+            pending = self._hold_pending.get(entry_id)
+            if pending is None or pending.timer is not timer:
+                return
+            del self._hold_pending[entry_id]
+            key = pending.key
+        self._release_dest(key)
+
     def _force_release_pending(self) -> None:
-        """Release every currently-latched Toggle entry AND every Hold-mode
-        remap whose physical source is still down, then clear both. Called
-        on gate-close (window-filter focus loss) and stop() -- the two
-        cleanup transitions that aren't already covered by update_snapshot()'s
-        per-entry diff.
+        """Release every currently-latched Auto Toggle entry, cancel and
+        release every Auto Hold entry with a tap in flight, AND release every
+        standard remap whose physical source is still down, then clear all
+        three. Called on gate-close (window-filter focus loss) and stop() --
+        the two cleanup transitions that aren't already covered by
+        update_snapshot()'s per-entry diff.
 
         Was Toggle-only until 2026-08-31: gate-close returned early before
-        Hold's own release-on-up path in `_handle()` ever ran, so a Hold
-        remap held through a focus loss stayed stuck if the user released
-        the physical key while still unfocused. Fixed by folding
-        `_active_remaps` into this same cleanup.
+        the standard remap's own release-on-up path in `_handle()` ever ran,
+        so a held remap through a focus loss stayed stuck if the user
+        released the physical key while still unfocused. Fixed by folding
+        `_active_remaps` into this same cleanup; `_hold_pending` (Auto Hold)
+        joined it when that mode was added.
 
-        Safe to call from either thread: `_toggle_on` is always
-        lock-protected. `_active_remaps` is otherwise hook-thread-only
+        Safe to call from either thread: `_toggle_on`/`_hold_pending` are
+        always lock-protected. `_active_remaps` is otherwise hook-thread-only
         (see its own comment in __init__), but every call site here either
         runs ON the hook thread itself (the gate-close path, inside
         `_handle()`) or only after `HookManager.stop()`'s `join()` has
@@ -367,12 +507,18 @@ class RemapperEngine:
         never reached from the Companion thread while the hook thread could
         still be concurrently mutating it."""
         with self._lock:
-            pending = list(self._toggle_on.values())
+            pending_toggle = list(self._toggle_on.values())
             self._toggle_on.clear()
-        pending.extend(self._active_remaps.values())
+            pending_hold = list(self._hold_pending.values())
+            self._hold_pending.clear()
+        pending_toggle.extend(self._active_remaps.values())
         self._active_remaps.clear()
-        for dest in pending:
-            self._release_dest(dest)
+        for pending in pending_hold:
+            pending.timer.cancel()
+        for key in pending_toggle:
+            self._release_dest(key)
+        for pending in pending_hold:
+            self._release_dest(pending.key)
 
     def _release_dest(self, dest: KeyBind) -> None:
         self._inject(dest, up=True)

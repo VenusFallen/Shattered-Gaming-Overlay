@@ -8,7 +8,7 @@ A gaming accessibility companion for Windows — remap keys and mouse buttons, b
 
 ### Remapper
 
-Remap any key or mouse button to another. Entries support two modes: **Hold**, which mirrors the source key 1:1, and **Toggle**, which latches the destination on with one press and releases it on the next — handy for sprint or crouch in games that don't offer a toggle option of their own. A remap's destination also arms macros and status tracking, so the rest of the app reacts to what you actually intended to press, not just the raw key.
+Two sections, two different jobs. **Remapping** is a plain 1:1 swap — bind any key or mouse button to another, and the destination mirrors the source's down/up at whatever frequency you press it. **Auto Toggle/Hold** works on a single key by itself: **Toggle** latches it down on the first press and releases it on the next, and **Hold** taps the key on both the press and release of your physical key — handy for games like FromSoft titles that hard-code sprint or crouch as toggle-only and won't let you rebind the behavior. Every entry, in either section, can be given its own name so a long list of remaps stays easy to keep track of. A remap's destination (or an Auto entry's own key) also arms macros and status tracking, so the rest of the app reacts to what you actually intended to press, not just the raw key.
 
 ![Remapper](assets/screenshots/remapper.png)
 

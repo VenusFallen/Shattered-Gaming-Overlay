@@ -35,11 +35,11 @@ already does (via `persist_window_select`), so it never fights that gate.
 from __future__ import annotations
 
 import copy
-import itertools
 import json
 import os
 import tempfile
 import threading
+import uuid
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -48,6 +48,7 @@ import psutil
 import window_select
 from app_state import (
     AppState,
+    AutoToggleHoldEntry,
     CrosshairState,
     MacroDef,
     MacroMode,
@@ -70,13 +71,16 @@ from key_capture import KeyBind, UNBOUND
 PROFILES_FILE = Path(os.getenv("LOCALAPPDATA") or tempfile.gettempdir()) / "Shattered Gaming Overlay" / "profiles.json"
 DEFAULT_NAME = "Default"
 
-_fallback_counter = itertools.count(1)
-
-
 def _fallback_id(prefix: str) -> str:
-    # Backfills a missing/corrupt id read from disk -- entries this module
-    # writes always carry a real id.
-    return f"{prefix}-restored-{next(_fallback_counter)}"
+    # NOT just a backfill for a missing/corrupt id read from disk -- this is
+    # also the primary id source for brand-new profiles, via
+    # create_profile_from_current() and import_profile() below. Used to be a
+    # process-lifetime counter restarting at 1 every launch, which meant the
+    # first profile created in any two separate app sessions collided on the
+    # same id ("profile-restored-1") -- that's what caused the duplicate-
+    # active-profile / delete-removes-both-profiles bug. uuid4 can't repeat
+    # across restarts; truncated to 8 hex chars to keep profiles.json readable.
+    return f"{prefix}-restored-{uuid.uuid4().hex[:8]}"
 
 
 # Payload only -- metadata lives on ProfileDef, see module docstring.
@@ -104,23 +108,54 @@ def _keybind_from_json(d: Optional[dict]) -> KeyBind:
 def _remap_entry_to_json(e: RemapEntry) -> dict:
     return {
         "id": e.id,
+        "name": e.name,
         "source": _keybind_to_json(e.source),
         "destination": _keybind_to_json(e.destination),
         "enabled": e.enabled,
-        "mode": e.mode.value,
     }
 
 
 def _remap_entry_from_json(d: dict) -> RemapEntry:
+    # "mode" is read here on purpose -- NOT parsed. A profile saved while
+    # RemapEntry still had a Hold/Toggle mode field (briefly shipped, now
+    # relocated to AutoToggleHoldEntry) may still have "mode": "Toggle" on a
+    # standard entry; that concept doesn't exist here anymore, so it's
+    # silently dropped and the entry loads as the plain 1:1 remap it's
+    # always been otherwise. Deliberately NOT auto-migrated into a new Auto
+    # Toggle/Hold entry: that would mean collapsing this entry's source AND
+    # destination into a single self-acting key, which could easily target
+    # the wrong key (an old Toggle remap's source and destination are often
+    # different keys) and silently change the user's actual bindings rather
+    # than just losing the latch behavior visibly. See profiles.py's
+    # migration note in the redesign report for the full reasoning.
     return RemapEntry(
         id=str(d.get("id") or _fallback_id("remap")),
+        name=str(d.get("name", "")),
         source=_keybind_from_json(d.get("source")),
         destination=_keybind_from_json(d.get("destination")),
         enabled=bool(d.get("enabled", True)),
-        # Missing on profiles saved before Toggle mode existed -- defaults
-        # to Hold, today's exact behavior, never silently retoggles a
-        # saved binding.
-        mode=_enum_from_value(RemapMode, d.get("mode"), RemapMode.HOLD),
+    )
+
+
+def _auto_entry_to_json(e: AutoToggleHoldEntry) -> dict:
+    return {
+        "id": e.id,
+        "name": e.name,
+        "key": _keybind_to_json(e.key),
+        "mode": e.mode.value,
+        "enabled": e.enabled,
+    }
+
+
+def _auto_entry_from_json(d: dict) -> AutoToggleHoldEntry:
+    return AutoToggleHoldEntry(
+        id=str(d.get("id") or _fallback_id("auto")),
+        name=str(d.get("name", "")),
+        key=_keybind_from_json(d.get("key")),
+        # Missing on any profile saved before this section existed --
+        # defaults to Toggle (this feature's own default for a new entry).
+        mode=_enum_from_value(RemapMode, d.get("mode"), RemapMode.TOGGLE),
+        enabled=bool(d.get("enabled", True)),
     )
 
 
@@ -306,6 +341,9 @@ def _profile_from_json(raw: dict) -> Tuple[ProfileDef, _ProfilePayload]:
     )
     payload: _ProfilePayload = {
         "entries": [_remap_entry_from_json(e) for e in raw.get("remapper", {}).get("entries", [])],
+        # Absent on any profile saved before this section existed -- empty
+        # list, same as a fresh Remapper with nothing added yet.
+        "auto_entries": [_auto_entry_from_json(e) for e in raw.get("remapper", {}).get("auto_entries", [])],
         "macros": [_macro_from_json(m) for m in raw.get("macros", {}).get("macros", [])],
         "window_select": _window_select_payload_from_json(raw.get("window_select")),
         "overlay": _overlay_from_json(raw.get("overlay")),
@@ -322,7 +360,10 @@ def _profile_payload_to_json(p: ProfileDef, payload: _ProfilePayload) -> dict:
         "persist_macros": p.persist_macros,
         "persist_window_select": p.persist_window_select,
         "target_executable": p.target_executable,
-        "remapper": {"entries": [_remap_entry_to_json(e) for e in payload.get("entries", [])]},  # type: ignore[arg-type]
+        "remapper": {
+            "entries": [_remap_entry_to_json(e) for e in payload.get("entries", [])],  # type: ignore[arg-type]
+            "auto_entries": [_auto_entry_to_json(e) for e in payload.get("auto_entries", [])],  # type: ignore[arg-type]
+        },
         "macros": {"macros": [_macro_to_json(m) for m in payload.get("macros", [])]},  # type: ignore[arg-type]
         "window_select": payload.get("window_select"),
         "overlay": _overlay_to_json(payload.get("overlay") or OverlayState()),  # type: ignore[arg-type]
@@ -364,7 +405,7 @@ def _write_all(app_state: AppState) -> None:
     with _payload_lock:
         payloads = dict(_payload_cache)
     raw_profiles = [
-        _profile_payload_to_json(p, payloads.get(p.id, {"entries": [], "macros": [], "window_select": None}))
+        _profile_payload_to_json(p, payloads.get(p.id, {"entries": [], "auto_entries": [], "macros": [], "window_select": None}))
         for p in app_state.profiles.profiles
     ]
     _write_disk({"active_id": app_state.profiles.active_id, "profiles": raw_profiles})
@@ -373,6 +414,46 @@ def _write_all(app_state: AppState) -> None:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def _repair_duplicate_ids(parsed: List[Tuple[ProfileDef, _ProfilePayload]]) -> bool:
+    """Self-heal profiles.json entries sharing an id -- the on-disk symptom
+    left behind by the now-fixed counter-based id bug (both id generators
+    used to restart at 1 every process launch, see _fallback_id's comment).
+    A shared id made the Active-profile check match multiple profiles at
+    once and made remove_profile() delete every profile sharing that id.
+
+    Reassigns a fresh id to every occurrence of a duplicate EXCEPT the last
+    one in on-disk order, which keeps the original id. Each profile keeps
+    its own name/settings/payload -- nothing is dropped or merged. Keeping
+    the last occurrence's id (rather than the first) means `active_id` --
+    itself just one id string, so it can't disambiguate on its own -- keeps
+    resolving to the same profile it did before repair in the case that
+    matters: create_profile_from_current()/import_profile() immediately mark
+    a brand-new profile active, so if a collision ever put two profiles on
+    the same id, the most-recently-appended (last) one is the one most
+    likely to be what `active_id` still points at.
+
+    Mutates the ProfileDef objects in `parsed` in place and returns whether
+    any repair happened, so the caller can leave a breadcrumb -- this
+    project has no configured logging handlers, so a comment at the call
+    site is the visibility this gets.
+    """
+    counts: Dict[str, int] = {}
+    for profile, _ in parsed:
+        counts[profile.id] = counts.get(profile.id, 0) + 1
+    duplicate_ids = {pid for pid, count in counts.items() if count > 1}
+    if not duplicate_ids:
+        return False
+
+    seen: Dict[str, int] = {}
+    for profile, _ in parsed:
+        if profile.id not in duplicate_ids:
+            continue
+        seen[profile.id] = seen.get(profile.id, 0) + 1
+        if seen[profile.id] < counts[profile.id]:  # not the last occurrence
+            profile.id = _fallback_id("profile")
+    return True
 
 
 def load_all(app_state: AppState) -> None:
@@ -387,19 +468,30 @@ def load_all(app_state: AppState) -> None:
     if not raw_profiles:
         return
 
-    profiles: List[ProfileDef] = []
-    payloads: Dict[str, _ProfilePayload] = {}
+    # Keep (profile, payload) paired in one list rather than keying a dict
+    # by id as each entry is parsed -- a profiles.json already corrupted by
+    # the duplicate-id bug would otherwise silently lose the earlier
+    # duplicate's payload right here, before _repair_duplicate_ids() below
+    # even gets a chance to fix the ids.
+    parsed: List[Tuple[ProfileDef, _ProfilePayload]] = []
     for raw in raw_profiles:
         if not isinstance(raw, dict):
             continue
-        profile, payload = _profile_from_json(raw)
-        profiles.append(profile)
-        payloads[profile.id] = payload
+        parsed.append(_profile_from_json(raw))
 
-    if not any(p.protected for p in profiles):
+    if not any(p.protected for p, _ in parsed):
         default = ProfileDef(id=_fallback_id("profile"), name=DEFAULT_NAME, protected=True)
-        profiles.insert(0, default)
-        payloads[default.id] = {"entries": [], "macros": [], "window_select": None}
+        parsed.insert(0, (default, {"entries": [], "auto_entries": [], "macros": [], "window_select": None}))
+
+    # Repaired here, not left for the user to hit again -- self-heals any
+    # profiles.json already corrupted by the bug this fix closes, on next
+    # launch, without manual intervention or data loss. apply_profile()
+    # below unconditionally writes the app state back to disk, which is what
+    # actually persists the repaired ids -- no separate write needed here.
+    _repair_duplicate_ids(parsed)
+
+    profiles: List[ProfileDef] = [p for p, _ in parsed]
+    payloads: Dict[str, _ProfilePayload] = {p.id: payload for p, payload in parsed}
 
     app_state.profiles.profiles = profiles
     with _payload_lock:
@@ -426,7 +518,7 @@ def apply_profile(app_state: AppState, profile_id: str) -> bool:
         return False
 
     with _payload_lock:
-        payload = _payload_cache.get(profile_id, {"entries": [], "macros": [], "window_select": None})
+        payload = _payload_cache.get(profile_id, {"entries": [], "auto_entries": [], "macros": [], "window_select": None})
         payload = copy.deepcopy(payload)
 
     entries: List[RemapEntry] = payload.get("entries", [])  # type: ignore[assignment]
@@ -436,6 +528,13 @@ def apply_profile(app_state: AppState, profile_id: str) -> bool:
     app_state.remapper.entries = entries
     app_state.remapper.capturing_entry_id = None
     app_state.remapper.capturing_field = None
+
+    auto_entries: List[AutoToggleHoldEntry] = payload.get("auto_entries", [])  # type: ignore[assignment]
+    if not profile.persist_remapper:
+        for auto_entry in auto_entries:
+            auto_entry.enabled = False
+    app_state.remapper.auto_entries = auto_entries
+    app_state.remapper.capturing_auto_id = None
 
     macros: List[MacroDef] = payload.get("macros", [])  # type: ignore[assignment]
     if not profile.persist_macros:
@@ -465,6 +564,7 @@ def apply_profile(app_state: AppState, profile_id: str) -> bool:
 
 def _save_payload_from_live(app_state: AppState, profile_id: str) -> None:
     entries = copy.deepcopy(app_state.remapper.entries)
+    auto_entries = copy.deepcopy(app_state.remapper.auto_entries)
     macros = copy.deepcopy(app_state.macros.macros)
     overlay = copy.deepcopy(app_state.overlay)
     ws = None
@@ -472,7 +572,13 @@ def _save_payload_from_live(app_state: AppState, profile_id: str) -> None:
     if selected is not None:
         ws = {"pid": selected.pid, "exe_name": selected.exe_name, "window_title": selected.window_title}
     with _payload_lock:
-        _payload_cache[profile_id] = {"entries": entries, "macros": macros, "window_select": ws, "overlay": overlay}
+        _payload_cache[profile_id] = {
+            "entries": entries,
+            "auto_entries": auto_entries,
+            "macros": macros,
+            "window_select": ws,
+            "overlay": overlay,
+        }
 
 
 def save_profile(app_state: AppState, profile_id: str) -> bool:
@@ -565,7 +671,7 @@ def export_profile_payload(app_state: AppState, profile_id: str) -> Optional[dic
     if profile is None:
         return None
     with _payload_lock:
-        payload = _payload_cache.get(profile_id, {"entries": [], "macros": [], "window_select": None, "overlay": None})
+        payload = _payload_cache.get(profile_id, {"entries": [], "auto_entries": [], "macros": [], "window_select": None, "overlay": None})
         payload = copy.deepcopy(payload)
     return _profile_payload_to_json(profile, payload)
 
@@ -613,6 +719,9 @@ def _validate_import_shape(raw: object) -> bool:
             return False
         entries = remapper.get("entries", [])
         if not isinstance(entries, list) or len(entries) > _MAX_IMPORT_LIST_LEN:
+            return False
+        auto_entries = remapper.get("auto_entries", [])
+        if not isinstance(auto_entries, list) or len(auto_entries) > _MAX_IMPORT_LIST_LEN:
             return False
 
     macros = raw.get("macros")
