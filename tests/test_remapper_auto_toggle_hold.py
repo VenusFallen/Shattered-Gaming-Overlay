@@ -183,8 +183,11 @@ def test_toggle_first_press_latches_key_down(engine):
 
 
 def test_toggle_second_press_releases_key(engine):
+    # A real second press is always preceded by a real physical release --
+    # can't press the same key twice without letting go first.
     _sync(engine, auto_entries=[_toggle_entry()])
     _press(engine, KEY.vk_code)
+    _release(engine, KEY.vk_code)
     input_inject.send_key.reset_mock()
 
     suppressed = _press(engine, KEY.vk_code)
@@ -195,7 +198,9 @@ def test_toggle_second_press_releases_key(engine):
 def test_toggle_third_press_latches_down_again(engine):
     _sync(engine, auto_entries=[_toggle_entry()])
     _press(engine, KEY.vk_code)
+    _release(engine, KEY.vk_code)
     _press(engine, KEY.vk_code)
+    _release(engine, KEY.vk_code)
     input_inject.send_key.reset_mock()
 
     _press(engine, KEY.vk_code)
@@ -380,6 +385,106 @@ def test_hold_second_edge_before_first_tap_finishes_force_completes_it(engine):
 
 
 # ---------------------------------------------------------------------------
+# OS key-repeat suppression -- found live 2026-09-11: holding a physical key
+# down makes Windows resend "down" transitions through WH_KEYBOARD_LL at the
+# keyboard repeat rate, indistinguishable from a fresh press at this layer.
+# Simulated here the same way a real repeat arrives: multiple `_press()`
+# calls with no `_release()` between them.
+# ---------------------------------------------------------------------------
+
+
+def test_hold_ignores_os_repeat_while_key_stays_physically_down(engine):
+    _sync(engine, auto_entries=[_hold_auto_entry()])
+
+    _press(engine, KEY.vk_code)  # genuine press -- starts the one tap
+    input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=False)
+    input_inject.send_key.reset_mock()
+
+    # Windows re-firing "down" while the key is still held, several times --
+    # must NOT start a new tap or touch the pending timer each time.
+    for _ in range(5):
+        suppressed = _press(engine, KEY.vk_code)
+        assert suppressed is True
+    input_inject.send_key.assert_not_called()
+    assert engine._hold_pending["auto-1"].timer.cancelled is False
+
+    # The one real tap still completes normally.
+    engine._hold_pending["auto-1"].timer.fn()
+    input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=True)
+
+
+def test_hold_repeat_after_tap_finishes_still_does_not_refire(engine):
+    # Repeat ticks can keep arriving after the press's tap has already
+    # completed (100ms gap is short) -- still must not start a fresh tap
+    # until the real physical release/press cycle happens.
+    _sync(engine, auto_entries=[_hold_auto_entry()])
+
+    _press(engine, KEY.vk_code)
+    engine._hold_pending["auto-1"].timer.fn()  # tap completes while still held
+    input_inject.send_key.reset_mock()
+
+    _press(engine, KEY.vk_code)  # another repeat tick
+    input_inject.send_key.assert_not_called()
+    assert "auto-1" not in engine._hold_pending
+
+    # Physical release still fires its own independent tap correctly.
+    _release(engine, KEY.vk_code)
+    input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=False)
+
+
+def test_hold_release_then_fresh_press_is_not_treated_as_a_repeat(engine):
+    _sync(engine, auto_entries=[_hold_auto_entry()])
+
+    _press(engine, KEY.vk_code)
+    engine._hold_pending["auto-1"].timer.fn()
+    _release(engine, KEY.vk_code)
+    engine._hold_pending["auto-1"].timer.fn()
+    input_inject.send_key.reset_mock()
+
+    # A genuinely new press after a real release must start a new tap.
+    suppressed = _press(engine, KEY.vk_code)
+    assert suppressed is True
+    input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=False)
+
+
+def test_toggle_ignores_os_repeat_while_key_stays_physically_down(engine):
+    _sync(engine, auto_entries=[_toggle_entry()])
+
+    _press(engine, KEY.vk_code)  # genuine press -- latches on
+    input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=False)
+    input_inject.send_key.reset_mock()
+
+    # Repeats while still held must not flip the latch back off.
+    for _ in range(5):
+        suppressed = _press(engine, KEY.vk_code)
+        assert suppressed is True
+    input_inject.send_key.assert_not_called()
+    assert engine._toggle_on["auto-1"] == KEY
+
+    # Physical release (no-op for Toggle either way), then a genuine second
+    # press releases the latch exactly once.
+    _release(engine, KEY.vk_code)
+    suppressed = _press(engine, KEY.vk_code)
+    assert suppressed is True
+    input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=True)
+
+
+def test_standard_remap_unaffected_by_repeat_tracking(engine):
+    # Repeat suppression is scoped to Auto Toggle/Hold only -- a standard
+    # remap must keep mirroring every physical down it receives, repeats
+    # included (redundant downs onto an already-down destination are
+    # harmless and expected fidelity, not a bug).
+    entry = RemapEntry(id="r1", source=SOURCE, destination=DEST)
+    _sync(engine, entries=[entry])
+
+    _press(engine, SOURCE.vk_code)
+    _press(engine, SOURCE.vk_code)  # simulated repeat
+    calls = input_inject.send_key.call_args_list
+    assert len(calls) == 2
+    assert all(c.args[0] == DEST.vk_code and c.kwargs["key_up"] is False for c in calls)
+
+
+# ---------------------------------------------------------------------------
 # Auto Hold cleanup -- entry edited/disabled/removed while a tap is pending
 # ---------------------------------------------------------------------------
 
@@ -496,6 +601,10 @@ def test_focus_regain_does_not_re_latch_toggle(engine, monkeypatch):
 
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 111)
     engine._handle(0x41, up=False, name="A", time_ms=0)  # focus lost, forces release
+    # User actually lets go of the physical key while tabbed away -- without
+    # this, KEY would still read as physically down and the "fresh" press
+    # below would be (correctly) treated as an OS repeat, not a new press.
+    _release(engine, KEY.vk_code)
     input_inject.send_key.reset_mock()
 
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)

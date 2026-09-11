@@ -36,6 +36,21 @@ If a physical vk matches BOTH a standard remap source and an Auto Toggle/
 Hold key, the standard remap wins (`_mapping` is checked first) -- an
 unusual double-binding, but deterministic rather than undefined.
 
+OS key-repeat: while a key is held, Windows resends "down" transitions
+through WH_KEYBOARD_LL at the keyboard repeat rate -- there's no repeat-
+count/prior-state bit on this hook the way WM_KEYDOWN's lParam has one, so
+each repeat is indistinguishable from a fresh press at this layer. Harmless
+for a standard remap (mirroring redundant downs onto an already-down
+destination changes nothing), but Auto Toggle/Hold treat every press as one
+discrete edge -- without filtering, a held Auto Hold key fired a new tap on
+every repeat tick instead of one on press and one on release (found live
+2026-09-11: a held Toggle-sprint key auto-repeated in and out of sprint),
+and Auto Toggle would rapidly flip on/off the same way. `_physical_down`
+tracks genuine physical key state (updated unconditionally at the top of
+`_handle()`, for every vk, not just auto-mapped ones -- see its own comment
+in __init__) so only the real press/release transitions reach either
+handler; a repeat is suppressed as a no-op.
+
 Every physical keyboard/mouse-button event is published as a normalized
 `EffectiveInputEvent`: the synthesized identity + `from_remap=True` if it
 matched an enabled entry in either section, original identity + `from_remap
@@ -231,6 +246,24 @@ class RemapperEngine:
         # thread's cleanup diff can force-drain it) -- always under `_lock`.
         self._hold_pending: Dict[str, _PendingHoldTap] = {}
 
+        # Hook-thread-only: physical vks currently held down, tracked for
+        # EVERY key/button regardless of whether it currently matches
+        # anything -- see `_handle()`'s repeat-suppression comment for why
+        # this can't be scoped to just auto-mapped keys. Windows' own
+        # keyboard auto-repeat resends a "down" transition through
+        # WH_KEYBOARD_LL at the OS repeat rate for as long as a key stays
+        # physically held, indistinguishable at this layer from a fresh
+        # press -- there's no repeat-count/prior-state bit on
+        # KBDLLHOOKSTRUCT the way WM_KEYDOWN's lParam has one. A standard
+        # remap mirroring redundant downs onto an already-down destination is
+        # harmless, but Auto Toggle/Hold treat every press as one discrete
+        # edge (flip the latch / fire one tap) -- without this, holding an
+        # Auto Hold key fires a new tap on every repeat tick instead of
+        # exactly one on press and one on release (real bug, found live
+        # 2026-09-11: holding a Toggle-sprint key auto-repeated in and out of
+        # sprint), and Auto Toggle would rapidly flip on/off the same way.
+        self._physical_down: "set[int]" = set()
+
         # Swappable so tests can control tap timing without a real sleep --
         # see tests/test_remapper_auto_hold.py. Defaults to a real
         # daemonized threading.Timer.
@@ -266,6 +299,7 @@ class RemapperEngine:
         self._hook.stop()
         self._started = False
         self._gate_open = True
+        self._physical_down.clear()
 
     @property
     def is_running(self) -> bool:
@@ -352,6 +386,18 @@ class RemapperEngine:
         return self._handle(vk, event.up, "", event.time_ms)
 
     def _handle(self, vk: int, up: bool, name: str, time_ms: int) -> Optional[bool]:
+        # Tracked unconditionally, before the gate/mapping checks below, so
+        # it stays accurate regardless of window-filter state or whether
+        # anything currently matches `vk` -- see `_physical_down`'s own
+        # comment in __init__ for why membership can't be scoped to just the
+        # auto-mapped keys.
+        was_down = vk in self._physical_down
+        if up:
+            self._physical_down.discard(vk)
+        else:
+            self._physical_down.add(vk)
+        is_os_repeat = (not up) and was_down
+
         with self._lock:
             mapping = self._mapping
             auto_mapping = self._auto_mapping
@@ -405,6 +451,12 @@ class RemapperEngine:
 
         auto_entry = auto_mapping.get(vk)
         if auto_entry is not None:
+            if is_os_repeat:
+                # Windows re-firing "down" for a key still physically held --
+                # not a real press edge. Already latched (Toggle) or already
+                # tapped (Hold); still suppress so the raw repeat doesn't
+                # leak through as an unmapped keystroke.
+                return True
             if RemapMode is not None and auto_entry.mode == RemapMode.TOGGLE:
                 return self._handle_auto_toggle(auto_entry, up, time_ms)
             return self._handle_auto_hold(auto_entry, up, time_ms)
