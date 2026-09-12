@@ -6,13 +6,94 @@ only renders app_state.ProfileDef list + the resulting state.
 
 from __future__ import annotations
 
+import time
+
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
 import file_dialog
 import profiles as profiles_engine
 import widgets
+import window_select
 from panel_context import PanelContext
+
+# How long the "Saved!" indicator stays next to a profile's name after
+# clicking Save -- a brief acknowledgment, not a lingering status.
+_SAVE_FLASH_SEC = 1.5
+
+
+def _render_target_executable_picker(ctx: PanelContext, profile) -> None:
+    """Dropdown for `ProfileDef.target_executable`, replacing a plain typed-
+    in exe name with a pick from currently running processes -- the same
+    `WindowSelectState.available` list Settings' Target Window section uses
+    (kept warm globally every frame by main.py, not scoped to that panel
+    being open). Mirrors that section's own layout: the currently selected
+    value is shown above the filter bar, not just as the combo's own closed-
+    state preview.
+
+    Force-refreshes the process list on the exact click that opens the combo
+    (`is_item_activated()`, not just "opened" -- that's true every frame the
+    popup stays open, which would re-enumerate windows every frame instead
+    of once). No separate Refresh button needed here -- opening the dropdown
+    IS the refresh trigger. Doesn't touch Settings' own Window Select
+    section or its Refresh button, a different feature/list-consumer of the
+    same underlying `available` list."""
+    theme = ctx.theme
+    state = ctx.state.profiles
+
+    preview = profile.target_executable or "(none -- auto-switch off)"
+    imgui.set_next_item_width(220)
+    opened = imgui.begin_combo("##targetexe", preview)
+    if imgui.is_item_activated():
+        window_select.force_refresh(ctx.state.window_select)
+        # `auto_switch_filter_text` is one shared field, not per-profile (see
+        # its own comment in app_state.py) -- without clearing it here,
+        # filtering in one profile's picker leaves that text still applied
+        # the next time ANY profile's picker is opened.
+        state.auto_switch_filter_text = ""
+    if imgui.is_item_hovered():
+        imgui.set_tooltip(
+            "Auto-loads this profile when that process gains focus. Also requires the global toggle in Settings."
+        )
+    if not opened:
+        return
+
+    widgets.muted_text(theme, f"Currently: {profile.target_executable or 'none'}")
+    imgui.separator()
+
+    imgui.set_next_item_width(-1)
+    _, state.auto_switch_filter_text = imgui.input_text(
+        f"{fa.ICON_FA_SEARCH} Filter##targetexefilter", state.auto_switch_filter_text
+    )
+    imgui.separator()
+
+    clicked_none, _ = imgui.selectable("(none -- auto-switch off)", profile.target_executable == "")
+    if clicked_none:
+        profile.target_executable = ""
+        profiles_engine.sync_metadata(ctx.state)
+        imgui.close_current_popup()
+
+    filter_lower = state.auto_switch_filter_text.strip().lower()
+    available = ctx.state.window_select.available
+    if not available:
+        widgets.muted_text(theme, "No running processes found yet.")
+    else:
+        seen = set()
+        for proc in available:
+            exe_lower = proc.exe_name.lower()
+            if exe_lower in seen:
+                continue  # one entry per exe name -- multiple windows of the same game collapse together
+            seen.add(exe_lower)
+            if filter_lower and filter_lower not in exe_lower and filter_lower not in proc.window_title.lower():
+                continue
+            is_selected = profile.target_executable.lower() == exe_lower
+            clicked, _ = imgui.selectable(f"{proc.exe_name}  --  {proc.window_title}", is_selected)
+            if clicked:
+                profile.target_executable = proc.exe_name
+                profiles_engine.sync_metadata(ctx.state)
+                imgui.close_current_popup()
+
+    imgui.end_combo()
 
 
 def render(ctx: PanelContext) -> None:
@@ -84,6 +165,8 @@ def render(ctx: PanelContext) -> None:
                 imgui.same_line()
                 if imgui.button(f"{fa.ICON_FA_SAVE}  Save"):
                     profiles_engine.save_profile(ctx.state, profile.id)
+                    state.save_flash_id = profile.id
+                    state.save_flash_until = time.monotonic() + _SAVE_FLASH_SEC
                 if imgui.is_item_hovered():
                     imgui.set_tooltip("Overwrite this profile with the CURRENT live Remapper/Macros/Window Select state.")
 
@@ -101,6 +184,10 @@ def render(ctx: PanelContext) -> None:
                 imgui.text(f"{profile.name}  ({fa.ICON_FA_LOCK} protected)")
             else:
                 imgui.text(profile.name)
+
+            if state.save_flash_id == profile.id and time.monotonic() < state.save_flash_until:
+                imgui.same_line()
+                widgets.status_badge(theme, "ok", "Saved!")
 
             if not profile.protected:
                 imgui.same_line()
@@ -133,17 +220,9 @@ def render(ctx: PanelContext) -> None:
                 profiles_engine.sync_metadata(ctx.state)
 
             imgui.spacing()
-            widgets.muted_text(theme, "Target executable (for auto-switch):")
+            widgets.muted_text(theme, "Auto-switch target:")
             imgui.same_line()
-            imgui.set_next_item_width(180)
-            _, profile.target_executable = imgui.input_text("##targetexe", profile.target_executable)
-            if imgui.is_item_hovered():
-                imgui.set_tooltip(
-                    "e.g. eft.exe -- auto-loads this profile when that process gains focus. "
-                    "Blank opts out. Also requires the global toggle in Settings."
-                )
-            if imgui.is_item_deactivated_after_edit():
-                profiles_engine.sync_metadata(ctx.state)
+            _render_target_executable_picker(ctx, profile)
 
             imgui.pop_id()
         imgui.spacing()

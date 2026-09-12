@@ -56,6 +56,18 @@ def test_export_profile_payload_matches_profiles_json_shape(state):
     assert "overlay" in payload  # always present, restored unconditionally
 
 
+def test_export_profile_payload_includes_target_executable(state):
+    # ProfileDef.target_executable (the auto-switch dropdown's backing field,
+    # panels/profiles.py) must round-trip through the same export shape as
+    # every other metadata field -- not silently dropped.
+    profile = state.profiles.add_profile("My Game")
+    profile.target_executable = "game.exe"
+
+    payload = profiles.export_profile_payload(state, profile.id)
+
+    assert payload["target_executable"] == "game.exe"
+
+
 def test_export_profile_to_file_writes_readable_json(state, tmp_path):
     profile = state.profiles.add_profile("My Game")
     out = tmp_path / "exported.json"
@@ -225,6 +237,23 @@ def test_import_profile_never_overwrites_existing_profile_payload(state):
     names = [p.name for p in state.profiles.profiles]
     assert names.count("Rival") == 1
     assert "Rival (2)" in names
+
+
+def test_import_profile_preserves_target_executable(state):
+    imported = profiles.import_profile(
+        state, json.dumps({"name": "Imported", "target_executable": "game.exe"})
+    )
+    assert imported is not None
+    assert imported.target_executable == "game.exe"
+
+
+def test_import_profile_defaults_target_executable_when_absent(state):
+    # Pre-auto-switch exports (or a hand-written minimal import) have no
+    # target_executable key at all -- must default to "" (auto-switch off),
+    # not raise or leave the field unset.
+    imported = profiles.import_profile(state, json.dumps({"name": "Old Export"}))
+    assert imported is not None
+    assert imported.target_executable == ""
 
 
 def test_import_profile_blank_name_falls_back_to_default_label(state):

@@ -89,8 +89,13 @@ def _post_init(app_state: AppState) -> None:
     tray_icon_module.tray_icon.start()
     # Hooks stay installed for the app's lifetime; only match/inject is
     # focus-gated. macro_engine subscribes to the post-remap event stream
-    # instead of its own hook -- wire it before either starts.
+    # instead of its own hook -- wire it before either starts. Also needs the
+    # gate-close signal directly (not just the event stream) -- see
+    # remapper.py's add_gate_close_listener() docstring: a live Hold/Toggle
+    # macro session has no other way to learn its trigger was released while
+    # the targeted process was unfocused.
     remapper_engine.add_effective_listener(macro_engine.handle_effective_event)
+    remapper_engine.add_gate_close_listener(macro_engine.handle_gate_closed)
     remapper_engine.start()
     macro_engine.start()
     # Fire-and-forget -- start_check() spawns its own thread and returns

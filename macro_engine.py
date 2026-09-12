@@ -96,6 +96,13 @@ class _RuntimeState:
     toggle_running: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
     thread: Optional[threading.Thread] = None
+    # Keys/mouse buttons this macro has sent a raw KEY_DOWN/MOUSE_DOWN for
+    # that haven't been matched by a KEY_UP/MOUSE_UP step yet. Only ever
+    # touched by this macro's own dedicated playback thread (never the hook
+    # thread), so no lock needed -- see _force_release_held()'s comment for
+    # why this exists.
+    held_keys: set = field(default_factory=set)
+    held_mouse: set = field(default_factory=set)
 
 
 class MacroEngine:
@@ -132,6 +139,13 @@ class MacroEngine:
         for rt in runtimes:
             if rt.thread is not None and rt.thread.is_alive():
                 rt.thread.join(timeout=1.0)
+        # `self._runtime.clear()` above means each loop's own next
+        # `_get_existing_runtime()` call reads back None, not this `rt` --
+        # its in-loop cleanup branch (see `_hold_loop`/`_toggle_loop`) can
+        # never fire on this shutdown path, so it's done explicitly here
+        # instead, once every thread has actually stopped touching `rt`.
+        for rt in runtimes:
+            self._force_release_held(rt)
 
     def update_snapshot(self, macros_state: "MacrosState") -> None:
         snaps: List[_MacroSnap] = []
@@ -176,6 +190,39 @@ class MacroEngine:
                 continue
             self._on_trigger(macro, event.up)
             break  # first enabled macro bound to this trigger wins
+
+    def handle_gate_closed(self) -> None:
+        """Registered as a `remapper.RemapperEngine.add_gate_close_listener()`
+        callback -- fires the instant the window-filter gate closes (targeted
+        process just lost focus). Stops every currently-running Hold/Toggle
+        session exactly as if its trigger had been released/toggled off
+        normally.
+
+        Needed because a session already running on its own dedicated thread
+        has no other way to learn about a trigger release that happens while
+        the gate is closed: `remapper.py`'s `_handle()` returns before
+        publishing anything at all while the gate is shut, so that release
+        never reaches `handle_effective_event()` below. Without this, a Hold
+        macro whose trigger got released during a focus loss would keep
+        re-firing its steps into whatever now has focus, indefinitely, until
+        the process regained focus and the key were released again -- see
+        remapper.py's `add_gate_close_listener()` docstring for the full
+        scenario. Flipping `held`/`toggle_running` here is all that's needed;
+        each session's own loop (`_hold_loop`/`_toggle_loop`) notices on its
+        next iteration and runs its existing `_force_release_held()` cleanup
+        exactly as it would for a normal release.
+
+        Runs on the hook thread -- must stay fast, same constraint as
+        `handle_effective_event()`."""
+        with self._lock:
+            runtimes = list(self._runtime.values())
+        for rt in runtimes:
+            if rt.held:
+                rt.held = False
+                rt.cancel_event.set()
+            if rt.toggle_running:
+                rt.toggle_running = False
+                rt.cancel_event.set()
 
     def _get_runtime(self, macro_id: str) -> _RuntimeState:
         with self._lock:
@@ -237,11 +284,14 @@ class MacroEngine:
         while True:
             rt = self._get_existing_runtime(macro_id)
             if rt is None or not rt.held:
+                if rt is not None:
+                    self._force_release_held(rt)
                 return
             macro = self._find_macro(macro_id)
             if macro is None or not macro.enabled:
+                self._force_release_held(rt)
                 return
-            self._execute_steps(macro, rt.cancel_event)
+            self._execute_steps(macro, rt.cancel_event, rt)
             rt.cancel_event.clear()
             time.sleep(_LOOP_YIELD_SEC)
 
@@ -249,13 +299,15 @@ class MacroEngine:
         while True:
             rt = self._get_existing_runtime(macro_id)
             if rt is None or not rt.toggle_running:
+                if rt is not None:
+                    self._force_release_held(rt)
                 return
             macro = self._find_macro(macro_id)
             if macro is None or not macro.enabled:
-                if rt is not None:
-                    rt.toggle_running = False
+                rt.toggle_running = False
+                self._force_release_held(rt)
                 return
-            self._execute_steps(macro, rt.cancel_event)
+            self._execute_steps(macro, rt.cancel_event, rt)
             rt.cancel_event.clear()
             time.sleep(_LOOP_YIELD_SEC)
 
@@ -263,27 +315,55 @@ class MacroEngine:
         macro = self._find_macro(macro_id)
         if macro is None or not macro.enabled:
             return
-        self._execute_steps(macro, threading.Event())
+        self._execute_steps(macro, threading.Event(), _RuntimeState())
+
+    def _force_release_held(self, rt: _RuntimeState) -> None:
+        """Kill switch for a Hold/Toggle session that's ending (trigger
+        released, toggled off, macro disabled/removed, or engine stop()):
+        release any key/mouse button this macro's own KEY_DOWN/MOUSE_DOWN
+        steps left down without a matching UP.
+
+        Needed because a Hold/Toggle session can be cancelled between steps
+        at any point -- if that happens right after a raw KEY_DOWN/MOUSE_DOWN
+        and before its matching UP later in the sequence, that step never
+        runs, and SendInput-injected key state outlives both this thread and
+        the triggering keypress (same class of bug remapper.py's
+        `_force_release_pending()` exists for). KEY_TAP/MOUSE_CLICK need no
+        such tracking -- they always send their own "up" immediately after,
+        even when the wait between them is cut short by cancellation."""
+        keys = list(rt.held_keys)
+        rt.held_keys.clear()
+        for vk in keys:
+            input_inject.send_key(vk, key_up=True)
+
+        buttons = list(rt.held_mouse)
+        rt.held_mouse.clear()
+        for label in buttons:
+            button = _MOUSE_BUTTON_BY_LABEL.get(label)
+            if button is not None:
+                input_inject.send_mouse_button(button, up=True)
 
     # ------------------------------------------------------------------
     # Step execution
     # ------------------------------------------------------------------
 
-    def _execute_steps(self, macro: _MacroSnap, cancel_event: threading.Event) -> bool:
+    def _execute_steps(self, macro: _MacroSnap, cancel_event: threading.Event, rt: _RuntimeState) -> bool:
         """Returns True if every step ran; False if interrupted mid-sequence
-        (Hold released / Toggle turned off)."""
+        (Hold released / Toggle turned off). `rt` tracks any KEY_DOWN/
+        MOUSE_DOWN left outstanding by an interruption -- see
+        `_force_release_held()`."""
         for step in macro.steps:
             if cancel_event.is_set():
                 return False
             try:
-                self._execute_step(step, macro.humanize_jitter_pct, cancel_event)
+                self._execute_step(step, macro.humanize_jitter_pct, cancel_event, rt)
             except Exception:
                 traceback.print_exc()
             if cancel_event.is_set():
                 return False
         return True
 
-    def _execute_step(self, step: _StepSnap, jitter_pct: int, cancel_event: threading.Event) -> None:
+    def _execute_step(self, step: _StepSnap, jitter_pct: int, cancel_event: threading.Event, rt: _RuntimeState) -> None:
         kind = step.kind
 
         if kind == MacroStepKind.DELAY:
@@ -294,32 +374,36 @@ class MacroEngine:
         if kind == MacroStepKind.KEY_DOWN:
             if step.key_vk is not None:
                 input_inject.send_key(step.key_vk, key_up=False)
+                rt.held_keys.add(step.key_vk)
             return
         if kind == MacroStepKind.KEY_UP:
             if step.key_vk is not None:
                 input_inject.send_key(step.key_vk, key_up=True)
+                rt.held_keys.discard(step.key_vk)
             return
         if kind == MacroStepKind.KEY_TAP:
             if step.key_vk is not None:
                 input_inject.send_key(step.key_vk, key_up=False)
                 cancel_event.wait(_TAP_HOLD_SEC)
-                input_inject.send_key(step.key_vk, key_up=True)
+                input_inject.send_key(step.key_vk, key_up=True)  # always sent, even if the wait above was cut short
             return
 
         button = _MOUSE_BUTTON_BY_LABEL.get(step.mouse_button)
         if kind == MacroStepKind.MOUSE_DOWN:
             if button is not None:
                 input_inject.send_mouse_button(button, up=False)
+                rt.held_mouse.add(step.mouse_button)
             return
         if kind == MacroStepKind.MOUSE_UP:
             if button is not None:
                 input_inject.send_mouse_button(button, up=True)
+                rt.held_mouse.discard(step.mouse_button)
             return
         if kind == MacroStepKind.MOUSE_CLICK:
             if button is not None:
                 input_inject.send_mouse_button(button, up=False)
                 cancel_event.wait(_CLICK_HOLD_SEC)
-                input_inject.send_mouse_button(button, up=True)
+                input_inject.send_mouse_button(button, up=True)  # always sent, even if the wait above was cut short
             return
 
         if kind == MacroStepKind.SCROLL:

@@ -205,6 +205,16 @@ class ProfilesState:
     profiles: List[ProfileDef] = field(default_factory=list)
     active_id: str = ""
     new_profile_draft: str = ""  # scratch buffer for the "create profile" name field
+    # Scratch filter text for the auto-switch target-executable picker
+    # (panels/profiles.py). One shared field, not per-profile, is enough --
+    # only one profile's picker popup can be open at a time.
+    auto_switch_filter_text: str = ""
+    # Momentary "Saved!" indicator next to a profile's name after clicking
+    # its Save button -- which profile, and until what monotonic timestamp
+    # panels/profiles.py should keep showing it. One shared pair, not
+    # per-profile, since only one Save click can be the most recent.
+    save_flash_id: Optional[str] = None
+    save_flash_until: float = 0.0
 
     def add_profile(self, name: str) -> ProfileDef:
         profile = ProfileDef(id=_next_id("profile"), name=name)

@@ -169,6 +169,16 @@ def _render_steps(ctx: PanelContext, macro) -> None:
                 changed, step.delay_ms = imgui.drag_int("##delay", step.delay_ms, 1.0, 0, 5000, "%d ms")
 
             imgui.same_line()
+            # Pinned to the card's right edge, not just chained via same_line()
+            # -- the preceding value widget's rendered width varies by step
+            # kind (a bind_button's width depends on the bound key's display
+            # name length, DELAY's drag_int is wider than SCROLL's), and a
+            # plain same_line() left this button's actual X position at the
+            # mercy of that, clipped off the visible card for wider rows
+            # (found live: a Delay step's "100 ms" box pushed it out of view).
+            # Same convention _render_editor() already uses for the macro-
+            # level delete button above.
+            imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
             if imgui.button(f"{fa.ICON_FA_TRASH}##removestep"):
                 remove_id = step.id
         imgui.pop_id()

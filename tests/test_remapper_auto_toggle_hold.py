@@ -573,6 +573,54 @@ def test_cleanup_forces_release_of_toggle_on_focus_loss(engine, monkeypatch):
     input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=True)
 
 
+def test_gate_close_listener_fires_exactly_on_the_open_to_closed_transition(engine, monkeypatch):
+    # Added for macro_engine.py's handle_gate_closed() -- a live Hold/Toggle
+    # macro session has no other way to learn its trigger was released while
+    # the targeted process was unfocused, so it needs this signal directly,
+    # not just the effective-event stream (which stops publishing while the
+    # gate is closed). See remapper.py's add_gate_close_listener() docstring.
+    target = ProcessInfo(pid=999, exe_name="game.exe", window_title="Game")
+    calls = []
+    engine.add_gate_close_listener(lambda: calls.append(1))
+
+    monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    _sync(engine, selected=target)
+    engine._handle(0x41, up=False, name="A", time_ms=0)  # gate already open -- no transition
+    assert calls == []
+
+    monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 111)
+    engine._handle(0x41, up=False, name="A", time_ms=0)  # open -> closed
+    assert calls == [1]
+
+    engine._handle(0x41, up=False, name="A", time_ms=0)  # still closed -- no repeat fire
+    assert calls == [1]
+
+    monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    engine._handle(0x41, up=False, name="A", time_ms=0)  # closed -> open -- not a close transition
+    assert calls == [1]
+
+
+def test_gate_close_listener_exception_does_not_break_the_hook(engine, monkeypatch):
+    target = ProcessInfo(pid=999, exe_name="game.exe", window_title="Game")
+
+    def _boom():
+        raise RuntimeError("listener blew up")
+
+    engine.add_gate_close_listener(_boom)
+    entry = _toggle_entry()
+    monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    _sync(engine, auto_entries=[entry], selected=target)
+    _press(engine, KEY.vk_code)
+    input_inject.send_key.reset_mock()
+
+    monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 111)
+    # Must not raise, and must still run this module's own cleanup despite
+    # the listener above throwing.
+    result = engine._handle(0x41, up=False, name="A", time_ms=0)
+    assert result is None
+    input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=True)
+
+
 def test_cleanup_forces_release_of_pending_hold_tap_on_focus_loss(engine, monkeypatch):
     target = ProcessInfo(pid=999, exe_name="game.exe", window_title="Game")
     entry = _hold_auto_entry()

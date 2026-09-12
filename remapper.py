@@ -96,6 +96,10 @@ callback doesn't fire while the Companion window is minimized, which would
 freeze a cached gate at whatever it was the instant before minimizing.
 `update_snapshot()` only hands off the target pid itself (not focus-sensitive);
 `_handle()` checks focus live against window_select's own polling thread.
+"the macro engine go inert alongside the remapper" is true for *matching* a
+fresh trigger, but not for a Hold/Toggle session already running on its own
+thread by the time the gate closes -- `add_gate_close_listener()` exists for
+that case, see its own docstring.
 
 This module owns its own `HookManager`, separate from
 `key_capture.capture_service`'s: that one is momentary and never suppresses
@@ -277,6 +281,10 @@ class RemapperEngine:
         self._gate_open = True
 
         self._listeners: List[EffectiveListener] = []
+        # Fired on the same open->closed transition as _force_release_pending()
+        # above, for a consumer with its own independent stuck-state to clean
+        # up on focus loss -- see add_gate_close_listener()'s docstring.
+        self._gate_close_listeners: List[Callable[[], None]] = []
         self._started = False
 
     # ------------------------------------------------------------------
@@ -307,6 +315,26 @@ class RemapperEngine:
 
     def add_effective_listener(self, callback: EffectiveListener) -> None:
         self._listeners.append(callback)
+
+    def add_gate_close_listener(self, callback: Callable[[], None]) -> None:
+        """Register a callback fired on the window-filter gate's exact
+        open->closed transition (target process just lost focus) -- the same
+        moment `_force_release_pending()` runs for this module's own state.
+
+        Exists for macro_engine.py: a live Hold/Toggle macro session runs on
+        its own dedicated thread reading `_RuntimeState.held`/`toggle_running`,
+        which only changes when a real trigger-release event reaches
+        `handle_effective_event()` -- and while the gate is closed, `_handle()`
+        returns before publishing anything at all (see module docstring's
+        "Window-filter gating" section), so a trigger release that happens
+        while the targeted process is unfocused is silently dropped and the
+        macro's loop never learns to stop. Without this, a Hold macro whose
+        trigger got released during a focus loss keeps re-firing its steps
+        into whatever now has focus, indefinitely -- found live 2026-09-12,
+        worse than a single stuck key since it's an actively repeating
+        action. Callbacks run on the hook thread; keep them fast, same
+        constraint as every other hook callback in this module."""
+        self._gate_close_listeners.append(callback)
 
     def update_snapshot(self, remapper_state: "RemapperState", window_select_state: "WindowSelectState") -> None:
         """Call once per Companion-window frame. KeyBind is a frozen
@@ -418,6 +446,11 @@ class RemapperEngine:
                 # reliable even while the Companion window is minimized,
                 # unlike the per-frame path.
                 self._force_release_pending()
+                for listener in list(self._gate_close_listeners):
+                    try:
+                        listener()
+                    except Exception:
+                        traceback.print_exc()
 
         if not gate_open:
             # Inert: targeted process doesn't currently have focus. Input

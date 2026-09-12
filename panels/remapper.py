@@ -126,7 +126,14 @@ def _render_standard_section(ctx: PanelContext) -> None:
             imgui.same_line()
             _handle_capture(ctx, entry, "destination")
 
-            _spacer()
+            imgui.same_line()
+            # Pinned to the card's right edge, not chained via _spacer() --
+            # the preceding bind_button's rendered width balloons to the
+            # "Press a key... (Esc to cancel)" label while mid-capture, which
+            # can push a same-line()-chained button off the visible card (no
+            # horizontal scrollbar exists to reveal it). Same fix as
+            # panels/macros.py's per-step delete button.
+            imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
             if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
                 remove_id = entry.id
 
@@ -191,7 +198,10 @@ def _render_auto_section(ctx: PanelContext) -> None:
                     "Hold: press taps the key once, release taps it again -- each tap is a clean down/up."
                 )
 
-            _spacer()
+            imgui.same_line()
+            # Same right-edge pin, same reason -- see the standard section's
+            # delete button above.
+            imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
             if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
                 remove_id = entry.id
 
