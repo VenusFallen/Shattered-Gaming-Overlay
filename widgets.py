@@ -267,6 +267,32 @@ def screen_position_picker(
 
 
 # ---------------------------------------------------------------------------
+# Right-pinned trailing control (delete buttons at the end of a row)
+# ---------------------------------------------------------------------------
+
+
+def right_pinned_cursor_x(margin: float = 40.0) -> float:
+    """Cursor X for a trailing right-aligned control (typically a row's
+    delete button): `margin` px from the container's right edge, UNLESS the
+    natural same_line() flow position is already further right than that --
+    in which case flow wins.
+
+    A row's preceding widgets don't always have a fixed width -- a
+    bind_button's capturing-state label ("Press a key... (Esc to cancel)")
+    or a long user-typed name can run wider than usual. Snapping a trailing
+    button to a fixed X unconditionally would draw it ON TOP of that
+    overflow instead of past it, which is worse than the original bug this
+    pattern replaces (a same_line()-chained button just clipping off the
+    card's visible edge, since these cards have no horizontal scrollbar) --
+    unpredictable click targeting between two stacked controls, rather than
+    one control simply being off-screen. This doesn't eliminate the
+    off-screen case, it only guarantees the button is never drawn under
+    something else; call `imgui.same_line()` first, same as any other
+    trailing item, then `imgui.set_cursor_pos_x(right_pinned_cursor_x())`."""
+    return max(imgui.get_window_width() - margin, imgui.get_cursor_pos_x())
+
+
+# ---------------------------------------------------------------------------
 # Key bind button (used by Remapper + Macros via key_capture.py)
 # ---------------------------------------------------------------------------
 

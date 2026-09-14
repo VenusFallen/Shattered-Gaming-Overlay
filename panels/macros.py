@@ -172,13 +172,15 @@ def _render_steps(ctx: PanelContext, macro) -> None:
             # Pinned to the card's right edge, not just chained via same_line()
             # -- the preceding value widget's rendered width varies by step
             # kind (a bind_button's width depends on the bound key's display
-            # name length, DELAY's drag_int is wider than SCROLL's), and a
-            # plain same_line() left this button's actual X position at the
-            # mercy of that, clipped off the visible card for wider rows
-            # (found live: a Delay step's "100 ms" box pushed it out of view).
-            # Same convention _render_editor() already uses for the macro-
-            # level delete button above.
-            imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
+            # name length -- and balloons further while mid-capture, DELAY's
+            # drag_int is wider than SCROLL's), and a plain same_line() left
+            # this button's actual X position at the mercy of that, clipped
+            # off the visible card for wider rows (found live: a Delay step's
+            # "100 ms" box pushed it out of view). right_pinned_cursor_x()
+            # falls back to flow instead of overlapping if a row somehow
+            # still runs wider than the pinned position (e.g. actively
+            # capturing a key on this step).
+            imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
             if imgui.button(f"{fa.ICON_FA_TRASH}##removestep"):
                 remove_id = step.id
         imgui.pop_id()
@@ -200,7 +202,7 @@ def _render_editor(ctx: PanelContext) -> None:
         imgui.set_next_item_width(280)
         changed, macro.name = imgui.input_text("Name", macro.name)
         imgui.same_line()
-        imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
+        imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
         delete_clicked = imgui.button(f"{fa.ICON_FA_TRASH}##removemacro")
         if imgui.is_item_hovered():
             imgui.set_tooltip("Delete this macro")

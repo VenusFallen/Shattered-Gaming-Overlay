@@ -97,12 +97,20 @@ class _RuntimeState:
     cancel_event: threading.Event = field(default_factory=threading.Event)
     thread: Optional[threading.Thread] = None
     # Keys/mouse buttons this macro has sent a raw KEY_DOWN/MOUSE_DOWN for
-    # that haven't been matched by a KEY_UP/MOUSE_UP step yet. Only ever
-    # touched by this macro's own dedicated playback thread (never the hook
-    # thread), so no lock needed -- see _force_release_held()'s comment for
-    # why this exists.
+    # that haven't been matched by a KEY_UP/MOUSE_UP step yet -- see
+    # _force_release_held()'s comment for why this exists.
     held_keys: set = field(default_factory=set)
     held_mouse: set = field(default_factory=set)
+    # Guards held_keys/held_mouse specifically. In normal operation only this
+    # runtime's own dedicated playback thread ever touches them, so this
+    # never actually contends -- but stop() calls _force_release_held() from
+    # the Companion thread after join(timeout=1.0), and if a thread somehow
+    # didn't finish within that timeout (shouldn't happen -- every wait
+    # inside _execute_step is interruptible via cancel_event -- but a hang
+    # elsewhere could still leave one alive), that thread could still be
+    # concurrently mutating these same sets. This closes that race rather
+    # than leaving it open on a "should never happen" assumption.
+    state_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 class MacroEngine:
@@ -330,14 +338,21 @@ class MacroEngine:
         the triggering keypress (same class of bug remapper.py's
         `_force_release_pending()` exists for). KEY_TAP/MOUSE_CLICK need no
         such tracking -- they always send their own "up" immediately after,
-        even when the wait between them is cut short by cancellation."""
-        keys = list(rt.held_keys)
-        rt.held_keys.clear()
+        even when the wait between them is cut short by cancellation.
+
+        Read-and-clear happens under `rt.state_lock`; the actual `send_key`/
+        `send_mouse_button` calls run after releasing it, same pattern
+        remapper.py's own force-release paths use -- never hold a lock
+        across a call into the OS."""
+        with rt.state_lock:
+            keys = list(rt.held_keys)
+            rt.held_keys.clear()
+            buttons = list(rt.held_mouse)
+            rt.held_mouse.clear()
+
         for vk in keys:
             input_inject.send_key(vk, key_up=True)
 
-        buttons = list(rt.held_mouse)
-        rt.held_mouse.clear()
         for label in buttons:
             button = _MOUSE_BUTTON_BY_LABEL.get(label)
             if button is not None:
@@ -374,12 +389,14 @@ class MacroEngine:
         if kind == MacroStepKind.KEY_DOWN:
             if step.key_vk is not None:
                 input_inject.send_key(step.key_vk, key_up=False)
-                rt.held_keys.add(step.key_vk)
+                with rt.state_lock:
+                    rt.held_keys.add(step.key_vk)
             return
         if kind == MacroStepKind.KEY_UP:
             if step.key_vk is not None:
                 input_inject.send_key(step.key_vk, key_up=True)
-                rt.held_keys.discard(step.key_vk)
+                with rt.state_lock:
+                    rt.held_keys.discard(step.key_vk)
             return
         if kind == MacroStepKind.KEY_TAP:
             if step.key_vk is not None:
@@ -392,12 +409,14 @@ class MacroEngine:
         if kind == MacroStepKind.MOUSE_DOWN:
             if button is not None:
                 input_inject.send_mouse_button(button, up=False)
-                rt.held_mouse.add(step.mouse_button)
+                with rt.state_lock:
+                    rt.held_mouse.add(step.mouse_button)
             return
         if kind == MacroStepKind.MOUSE_UP:
             if button is not None:
                 input_inject.send_mouse_button(button, up=True)
-                rt.held_mouse.discard(step.mouse_button)
+                with rt.state_lock:
+                    rt.held_mouse.discard(step.mouse_button)
             return
         if kind == MacroStepKind.MOUSE_CLICK:
             if button is not None:

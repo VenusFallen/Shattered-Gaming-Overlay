@@ -191,7 +191,11 @@ def render(ctx: PanelContext) -> None:
 
             if not profile.protected:
                 imgui.same_line()
-                imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
+                # right_pinned_cursor_x(), not a fixed offset -- a long
+                # user-typed profile name (or the Saved! flash badge just
+                # before this) can run wider than usual; falling back to
+                # flow instead of a fixed X avoids drawing this on top of it.
+                imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
                 if imgui.button(f"{fa.ICON_FA_TRASH}##removeprofile"):
                     remove_id = profile.id
 

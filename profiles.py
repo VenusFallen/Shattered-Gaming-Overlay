@@ -506,6 +506,37 @@ def load_all(app_state: AppState) -> None:
     apply_profile(app_state, active_id)
 
 
+def _resolve_window_select_target(ws: dict) -> ProcessInfo:
+    """A persisted Window Select target's `pid` is only valid for the OS
+    process instance that happened to be running when it was saved -- pids
+    aren't stable across that game's own restarts (a fresh launch always
+    gets a new one from Windows), so trusting the saved pid directly would
+    silently target a process that no longer exists. Real bug, found live
+    2026-09-13: after rebooting the app (or the game), a profile's saved
+    Window Select target stopped actually gating the Remapper/Macros, with
+    no visible error -- `remapper.py`'s window-filter gate just stayed
+    permanently closed since no window ever has that dead pid again,
+    indistinguishable from "nothing selected" without opening Settings to
+    notice, and the user had to manually reselect the process every time.
+
+    Re-resolves by exe name against a fresh enumeration at restore time
+    instead: if that exe is currently running, use its actual current pid.
+    Covers the common case this bug was reported in -- the target game
+    already running by the time the app (re)starts. Falls back to the saved
+    pid as a best-effort placeholder if the exe isn't currently found (game
+    not running yet) -- still shown in the UI, still safely inert (the gate
+    stays closed rather than open) until the game is found, same as before
+    this fix, just no longer silently wrong once the game IS running."""
+    try:
+        current = window_select.enumerate_target_windows()
+    except OSError:
+        current = []
+    match = next((p for p in current if p.exe_name.lower() == str(ws["exe_name"]).lower()), None)
+    if match is not None:
+        return match
+    return ProcessInfo(pid=int(ws["pid"]), exe_name=str(ws["exe_name"]), window_title=str(ws.get("window_title", "")))
+
+
 def apply_profile(app_state: AppState, profile_id: str) -> bool:
     """Restore `profile_id`'s saved Remapper/Macros/Window-Select/Overlay
     payload into the live AppState, applying the persist_* safety pattern to
@@ -547,9 +578,7 @@ def apply_profile(app_state: AppState, profile_id: str) -> bool:
 
     ws = payload.get("window_select")
     if profile.persist_window_select and ws:
-        app_state.window_select.selected = ProcessInfo(
-            pid=ws["pid"], exe_name=ws["exe_name"], window_title=ws["window_title"]  # type: ignore[index]
-        )
+        app_state.window_select.selected = _resolve_window_select_target(ws)  # type: ignore[arg-type]
     else:
         app_state.window_select.selected = None
     app_state.window_select.selected_has_focus = False

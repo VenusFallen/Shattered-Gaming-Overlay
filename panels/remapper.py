@@ -131,9 +131,11 @@ def _render_standard_section(ctx: PanelContext) -> None:
             # the preceding bind_button's rendered width balloons to the
             # "Press a key... (Esc to cancel)" label while mid-capture, which
             # can push a same-line()-chained button off the visible card (no
-            # horizontal scrollbar exists to reveal it). Same fix as
-            # panels/macros.py's per-step delete button.
-            imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
+            # horizontal scrollbar exists to reveal it). right_pinned_cursor_x()
+            # falls back to flow instead of overlapping if the row still runs
+            # wider than the pinned position. Same fix as panels/macros.py's
+            # per-step delete button.
+            imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
             if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
                 remove_id = entry.id
 
@@ -201,7 +203,7 @@ def _render_auto_section(ctx: PanelContext) -> None:
             imgui.same_line()
             # Same right-edge pin, same reason -- see the standard section's
             # delete button above.
-            imgui.set_cursor_pos_x(imgui.get_window_width() - 40)
+            imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
             if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
                 remove_id = entry.id
 
