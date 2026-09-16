@@ -14,15 +14,17 @@ Two sections, two different jobs. **Remapping** is a plain 1:1 swap — bind any
 
 ### Macros
 
-Record a sequence and play it back with Once, Hold, or Toggle triggers. Playback timing is humanized rather than robotically exact.
+Record a sequence and play it back with Once, Hold, or Toggle triggers. Playback timing is humanized rather than robotically exact. Delay steps take any value you want — drag to adjust or type an exact number in, no arbitrary cap.
 
 ![Macros](assets/screenshots/macros.png)
 
 ### Profiles
 
-Save named configs per game — Remapper, Macros, window targeting, and Overlay settings all travel together. Point a profile at a specific `.exe` and turn on auto-switch in Settings, and it loads itself the moment that game gets focus. Export a profile to a file and hand it to a friend; importing one always adds it as new, so you never lose your own setup by accident.
+Save named configs per game — Remapper, Macros, window targeting, and Overlay settings all travel together. Point a profile at a game by picking it from a live list of what's currently running — no typing an exact filename — and turn on auto-switch in Settings, and it loads itself the moment that game gets focus. Export a profile to a file and hand it to a friend; importing one always adds it as new, so you never lose your own setup by accident.
 
 ![Profiles](assets/screenshots/profiles.png)
+
+*(One profile's row blurred for privacy — it just names a specific game.)*
 
 ### Overlay
 
@@ -30,7 +32,7 @@ A passive HUD that sits over the game: CPU/GPU load and temps, VRAM/RAM, FPS wit
 
 ### Window targeting
 
-Point the app at one running process instead of leaving it global, and Remapper and Macros go inert the instant that process loses focus — nothing you've bound reaches the rest of your desktop while you're alt-tabbed out. The list refreshes on its own every couple seconds, or force it with the button.
+Point the app at one running process instead of leaving it global, and Remapper and Macros go inert the instant that process loses focus — nothing you've bound reaches the rest of your desktop while you're alt-tabbed out. The list refreshes on its own every couple seconds, or force it with the button. If the targeted game restarts partway through your session, the app quietly finds it again on its own — no need to reselect it.
 
 ![Window targeting](assets/screenshots/window_select.png)
 

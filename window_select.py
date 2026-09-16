@@ -159,6 +159,35 @@ _REFRESH_INTERVAL_SEC = 2.0
 _last_refresh_monotonic = 0.0
 
 
+def _reacquire_selected_if_stale(state: WindowSelectState) -> None:
+    """A selected target's pid only identifies the specific OS process
+    instance that was running at the moment it was chosen (or restored from
+    a profile) -- pids aren't stable across that process's own restarts. If
+    `selected` is no longer among the freshly enumerated windows but one
+    with the SAME exe name now is, silently re-point `selected` at it (a
+    fresh pid, same exe) instead of leaving it stuck on a dead one.
+
+    Runs alongside every enumeration (`force_refresh()`/`refresh_if_stale()`
+    both call this right after repopulating `state.available`), so a
+    profile's Window Select target keeps working across the target game's
+    own restarts for as long as the app stays running -- not just once at
+    profile-load time. Closes the gap profiles.py's own restore-time
+    re-resolution (`_resolve_window_select_target()`) left open: that one
+    only helps if the game is ALREADY running the moment the profile loads;
+    if the app boots (or a profile loads) before the game does, the stale
+    target never recovered without a manual reselect through Settings --
+    real bug, found live 2026-09-15, defeats a big part of the point of
+    persisting a Window Select target across sessions in the first place."""
+    selected = state.selected
+    if selected is None:
+        return
+    if any(p.pid == selected.pid for p in state.available):
+        return  # still a live, correctly-targeted process -- nothing to do
+    match = next((p for p in state.available if p.exe_name.lower() == selected.exe_name.lower()), None)
+    if match is not None:
+        state.selected = match
+
+
 def force_refresh(state: WindowSelectState) -> None:
     """Immediate re-enumeration, bypassing the throttle -- for the UI's
     manual Refresh button."""
@@ -166,6 +195,7 @@ def force_refresh(state: WindowSelectState) -> None:
     _last_refresh_monotonic = time.monotonic()
     try:
         state.available = enumerate_target_windows()
+        _reacquire_selected_if_stale(state)
     except OSError:
         pass
 
@@ -173,14 +203,16 @@ def force_refresh(state: WindowSelectState) -> None:
 def refresh_if_stale(state: WindowSelectState) -> None:
     """Cheap per-frame entry point for the UI layer. Always updates
     `state.selected_has_focus` (cheap, unconditional). Only re-enumerates
-    `state.available` if `_REFRESH_INTERVAL_SEC` has elapsed since the last
-    enumeration."""
+    `state.available` (and re-acquires `state.selected` if it's gone stale --
+    see `_reacquire_selected_if_stale()`) if `_REFRESH_INTERVAL_SEC` has
+    elapsed since the last enumeration."""
     global _last_refresh_monotonic
     now = time.monotonic()
     if (now - _last_refresh_monotonic) >= _REFRESH_INTERVAL_SEC:
         _last_refresh_monotonic = now
         try:
             state.available = enumerate_target_windows()
+            _reacquire_selected_if_stale(state)
         except OSError:
             # Best-effort -- leave the previous list rather than blank the UI
             # over a transient Win32 error.
@@ -206,6 +238,84 @@ _last_focus_poll_monotonic = 0.0
 _focus_thread: Optional[threading.Thread] = None
 _focus_thread_stop = threading.Event()
 
+# Live-resolved target pid, kept current by the SAME background thread --
+# see set_target_exe_name()/cached_target_pid()'s own docstrings for why
+# this exists as a second thing this thread tracks, not just focus.
+_TARGET_REACQUIRE_INTERVAL_SEC = 2.0  # matches _REFRESH_INTERVAL_SEC's cadence
+_target_lock = threading.Lock()
+_target_exe_name: Optional[str] = None
+_cached_target_pid = 0
+_last_target_reacquire_monotonic = 0.0
+
+
+def set_target_exe_name(exe_name: Optional[str]) -> None:
+    """Tell the background focus-tracking thread which exe (if any) to keep
+    resolving a live pid for -- pass `None` for no target (Global).
+
+    Call this from remapper.py's `update_snapshot()` every Companion-window
+    frame with whatever's currently selected; cheap (a lock plus a string
+    compare), safe to call redundantly every time. It only needs to run
+    ONCE per actual target change, though -- after that, `cached_target_pid()`
+    stays current on its own via the background thread below, with no
+    further Companion-frame activity required. That's the whole point: a
+    profile's Window Select target used to only get (re-)resolved when a
+    Companion-thread frame actually ran, which stops happening the instant
+    the Companion window is minimized -- normal for the rest of a gaming
+    session. If the targeted game then restarted (new pid) while minimized,
+    nothing ever noticed. Real bug, found live 2026-09-15."""
+    global _target_exe_name, _cached_target_pid, _last_target_reacquire_monotonic
+    with _target_lock:
+        if _target_exe_name != exe_name:
+            _target_exe_name = exe_name
+            _cached_target_pid = 0
+            # Force the next poll tick to re-resolve immediately rather than
+            # waiting out whatever's left of the old target's interval.
+            _last_target_reacquire_monotonic = 0.0
+
+
+def cached_target_pid() -> int:
+    """Thread-safe, cheap, non-blocking read of the live-resolved pid for
+    whatever exe `set_target_exe_name()` was last told to target. Returns 0
+    if no target is set, or none has been found running yet.
+
+    Kept current by the same background thread `start_focus_tracking()`
+    runs, re-enumerating windows every `_TARGET_REACQUIRE_INTERVAL_SEC` and
+    matching by exe name -- independent of the Companion window's render
+    state, unlike `refresh_if_stale()`'s own reacquire logic (which still
+    matters for keeping `WindowSelectState.selected` accurate for display,
+    but can't run at all while minimized). This is what makes the
+    remapper's actual gate resilient to the target game restarting mid-
+    session with a new pid, even with the Companion window sitting
+    minimized the entire time."""
+    with _target_lock:
+        return _cached_target_pid
+
+
+def _maybe_reacquire_target(now: float) -> None:
+    """One tick of the target-pid re-resolution -- factored out of
+    `_focus_poll_loop()` so it's directly callable from tests without
+    spinning a real thread. Re-enumerates and updates `_cached_target_pid`
+    only if a target is set AND `_TARGET_REACQUIRE_INTERVAL_SEC` has
+    elapsed; otherwise a no-op."""
+    global _cached_target_pid, _last_target_reacquire_monotonic
+    with _target_lock:
+        target_exe = _target_exe_name
+        due = target_exe is not None and (now - _last_target_reacquire_monotonic) >= _TARGET_REACQUIRE_INTERVAL_SEC
+    if not due:
+        return
+    try:
+        windows = enumerate_target_windows()
+    except OSError:
+        windows = []
+    match = next((w for w in windows if w.exe_name.lower() == target_exe.lower()), None)
+    with _target_lock:
+        # Re-check target_exe_name hasn't changed while enumerate_target_
+        # windows() (the slow part) was running -- don't let a stale lookup
+        # for the OLD target overwrite a newer one.
+        if _target_exe_name == target_exe:
+            _cached_target_pid = match.pid if match is not None else 0
+            _last_target_reacquire_monotonic = now
+
 
 def _focus_poll_loop() -> None:
     global _cached_foreground_pid, _last_focus_poll_monotonic
@@ -217,6 +327,9 @@ def _focus_poll_loop() -> None:
         with _focus_lock:
             _cached_foreground_pid = pid
             _last_focus_poll_monotonic = time.monotonic()
+
+        _maybe_reacquire_target(time.monotonic())
+
         _focus_thread_stop.wait(_FOCUS_POLL_INTERVAL_SEC)
 
 
@@ -235,12 +348,16 @@ def start_focus_tracking() -> None:
 def stop_focus_tracking() -> None:
     """Stop the background thread cleanly. Safe to call even if the thread
     was never started."""
-    global _focus_thread
+    global _focus_thread, _target_exe_name, _cached_target_pid, _last_target_reacquire_monotonic
     _focus_thread_stop.set()
     thread = _focus_thread
     _focus_thread = None
     if thread is not None and thread.is_alive():
         thread.join(timeout=1.0)
+    with _target_lock:
+        _target_exe_name = None
+        _cached_target_pid = 0
+        _last_target_reacquire_monotonic = 0.0
 
 
 def focus_tracking_is_running() -> bool:

@@ -561,6 +561,11 @@ def test_cleanup_forces_release_of_toggle_on_focus_loss(engine, monkeypatch):
     entry = _toggle_entry()
 
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    # Simulates window_select's own background thread having already
+    # resolved the target exe to this pid -- see cached_target_pid()'s
+    # docstring; the gate now compares against this, not a value snapshotted
+    # in update_snapshot().
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
     _sync(engine, auto_entries=[entry], selected=target)
     _press(engine, KEY.vk_code)  # latch on while the targeted process has focus
     input_inject.send_key.reset_mock()
@@ -571,6 +576,39 @@ def test_cleanup_forces_release_of_toggle_on_focus_loss(engine, monkeypatch):
     result = engine._handle(0x41, up=False, name="A", time_ms=0)
     assert result is None  # gate closed -- this unrelated event passes through untouched
     input_inject.send_key.assert_called_once_with(KEY.vk_code, key_up=True)
+
+
+def test_gate_reflects_a_live_target_pid_change_with_no_new_update_snapshot_call(engine, monkeypatch):
+    # The whole point of the cached_target_pid() architecture (see
+    # remapper.py's module docstring, "Window-filter gating"): the gate must
+    # notice the target game restarting with a new pid WITHOUT update_snapshot()
+    # (Companion-frame-driven) ever being called again -- window_select.py's
+    # own background thread is what's supposed to keep this current instead.
+    target = ProcessInfo(pid=999, exe_name="game.exe", window_title="Game")
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
+    monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    _sync(engine, entries=[RemapEntry(id="r1", source=SOURCE, destination=DEST)], selected=target)
+
+    _press(engine, SOURCE.vk_code)
+    input_inject.send_key.assert_called_once_with(DEST.vk_code, key_up=False)
+    input_inject.send_key.reset_mock()
+
+    # The game "restarted" and got a new pid (1234) -- simulated exactly as
+    # window_select's background thread would update it: no _sync()/
+    # update_snapshot() call here at all, only cached_target_pid() changing.
+    # cached_foreground_pid() still reports the OLD pid 999 (nothing has
+    # focus at that literal instant -- normal mid-relaunch transient), so the
+    # gate should now read as closed against the new target.
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 1234)
+    result = engine._handle(0x51, up=False, name="Q", time_ms=0)  # unrelated key
+    assert result is None  # gate closed -- 999 (foreground) != 1234 (new target)
+    input_inject.send_key.reset_mock()  # gate-close force-released the held remap; not what's under test here
+
+    # Once the relaunched game actually takes foreground focus (new pid),
+    # the gate reopens -- again with no update_snapshot() call in between.
+    monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 1234)
+    _press(engine, SOURCE.vk_code)
+    input_inject.send_key.assert_called_once_with(DEST.vk_code, key_up=False)
 
 
 def test_gate_close_listener_fires_exactly_on_the_open_to_closed_transition(engine, monkeypatch):
@@ -584,6 +622,7 @@ def test_gate_close_listener_fires_exactly_on_the_open_to_closed_transition(engi
     engine.add_gate_close_listener(lambda: calls.append(1))
 
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
     _sync(engine, selected=target)
     engine._handle(0x41, up=False, name="A", time_ms=0)  # gate already open -- no transition
     assert calls == []
@@ -609,6 +648,7 @@ def test_gate_close_listener_exception_does_not_break_the_hook(engine, monkeypat
     engine.add_gate_close_listener(_boom)
     entry = _toggle_entry()
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
     _sync(engine, auto_entries=[entry], selected=target)
     _press(engine, KEY.vk_code)
     input_inject.send_key.reset_mock()
@@ -626,6 +666,7 @@ def test_cleanup_forces_release_of_pending_hold_tap_on_focus_loss(engine, monkey
     entry = _hold_auto_entry()
 
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
     _sync(engine, auto_entries=[entry], selected=target)
     _press(engine, KEY.vk_code)
     timer = engine._hold_pending["auto-1"].timer
@@ -643,6 +684,7 @@ def test_focus_regain_does_not_re_latch_toggle(engine, monkeypatch):
     entry = _toggle_entry()
 
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
     _sync(engine, auto_entries=[entry], selected=target)
     _press(engine, KEY.vk_code)
     input_inject.send_key.reset_mock()
@@ -709,6 +751,7 @@ def test_cleanup_forces_release_of_held_standard_remap_on_focus_loss(engine, mon
     entry = RemapEntry(id="r1", source=SOURCE, destination=DEST)
 
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
+    monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
     _sync(engine, entries=[entry], selected=target)
     _press(engine, SOURCE.vk_code)  # source held down while the targeted process has focus
     input_inject.send_key.reset_mock()

@@ -18,6 +18,11 @@ from panel_context import PanelContext
 _MODE_LABELS = [m.value for m in MacroMode]
 _STEP_KIND_LABELS = [k.value for k in MacroStepKind]
 _MOUSE_BUTTONS = ["Left", "Right", "Middle", "X1", "X2"]
+# A ceiling for the Delay step's drag_int, not a meaningful limit -- roughly
+# 23 days, comfortably below drag_int's underlying int32 range. Exists only
+# because drag_int requires a real v_max (v_min=v_max=0 to disable clamping
+# entirely would also remove the floor at 0, which IS meaningful).
+_MAX_DELAY_MS = 2_000_000_000
 
 
 def _render_list(ctx: PanelContext) -> None:
@@ -165,8 +170,28 @@ def _render_steps(ctx: PanelContext, macro) -> None:
                 imgui.set_next_item_width(120)
                 changed, step.scroll_delta = imgui.drag_int("##scroll", step.scroll_delta, 10.0, -1200, 1200, "%d")
             elif step.kind == MacroStepKind.DELAY:
-                imgui.set_next_item_width(140)
-                changed, step.delay_ms = imgui.drag_int("##delay", step.delay_ms, 1.0, 0, 5000, "%d ms")
+                # drag_int, not input_int -- click-and-drag to adjust AND
+                # double-click (or Ctrl+click) to type an exact value are
+                # both native to ImGui's drag widgets, no custom hybrid
+                # needed. Plain "%d" format, not the old "%d ms" -- a
+                # non-numeric suffix baked into the display format can
+                # interfere with parsing the value back when typing a
+                # replacement, so "ms" is its own label instead. Old 0-5000
+                # cap was arbitrary (delays longer than 5 seconds are a real
+                # use case, e.g. waiting out a loading screen mid-macro);
+                # _MAX_DELAY_MS is a generous ceiling, not a meaningful limit
+                # -- drag_int still needs a real v_max, and v_min=v_max=0
+                # to fully disable clamping would also remove the floor at 0.
+                # Narrower than the old 140 -- freeing up room for the
+                # separate "ms" label below, which adds width the old baked-
+                # in "%d ms" format didn't (that text lived inside this same
+                # box). Still comfortable for any realistic delay value;
+                # _MAX_DELAY_MS existing mainly as a ceiling rather than
+                # something anyone would actually type out in full.
+                imgui.set_next_item_width(90)
+                changed, step.delay_ms = imgui.drag_int("##delay", step.delay_ms, 1.0, 0, _MAX_DELAY_MS, "%d")
+                imgui.same_line()
+                widgets.muted_text(theme, "ms")
 
             imgui.same_line()
             # Pinned to the card's right edge, not just chained via same_line()

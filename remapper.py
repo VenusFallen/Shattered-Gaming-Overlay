@@ -89,14 +89,22 @@ Window-filter gating: when a process is targeted
 process loses OS foreground focus and resumes the instant it regains it.
 Applied once, centrally, in `_handle()` -- while closed, events are neither
 remapped/suppressed nor published, which is what makes the macro engine go
-inert alongside the remapper without its own focus-tracking logic. The gate
-is evaluated fresh on every event via `window_select.cached_foreground_pid()`,
-not a value cached in `update_snapshot()` -- Hello ImGui's `show_gui`
-callback doesn't fire while the Companion window is minimized, which would
-freeze a cached gate at whatever it was the instant before minimizing.
-`update_snapshot()` only hands off the target pid itself (not focus-sensitive);
-`_handle()` checks focus live against window_select's own polling thread.
-"the macro engine go inert alongside the remapper" is true for *matching* a
+inert alongside the remapper without its own focus-tracking logic. Both
+sides of the comparison are evaluated fresh on every event, against
+window_select's own independently-running background thread --
+`cached_foreground_pid()` for who currently has focus, `cached_target_pid()`
+for what pid the targeted exe currently resolves to -- rather than either
+being a value cached in `update_snapshot()`. This isn't just about
+`show_gui` not firing while the Companion window is minimized (which would
+freeze a cached PID gate at whatever it was the instant before minimizing);
+it's also that the targeted GAME can restart mid-session and get a new pid
+from Windows, and nothing about a Companion-frame running again would
+notice that on its own -- real bug, found live 2026-09-15, see
+window_select.py's `cached_target_pid()` docstring for the full story.
+`update_snapshot()` only arms window_select's background thread with which
+exe name to track (`set_target_exe_name()`) and whether a target is set at
+all (`_gate_active`); it hands off no pid of its own. "the macro engine go
+inert alongside the remapper" is true for *matching* a
 fresh trigger, but not for a Hold/Toggle session already running on its own
 thread by the time the gate closes -- `add_gate_close_listener()` exists for
 that case, see its own docstring.
@@ -225,12 +233,14 @@ class RemapperEngine:
         self._lock = threading.Lock()
 
         # Written only by update_snapshot() (Companion thread), read only by
-        # _handle() (hook thread). `_target_pid` is None when no process is
-        # targeted (gate always open); the has-focus check itself is
-        # deliberately NOT part of this snapshot -- see module docstring.
+        # _handle() (hook thread). `_gate_active` is False when no process is
+        # targeted (gate always open). The actual pid to gate against is NOT
+        # snapshotted here -- see module docstring's "Window-filter gating"
+        # section for why it's resolved live via
+        # window_select.cached_target_pid() on every event instead.
         self._mapping: Dict[int, _MappingEntry] = {}
         self._auto_mapping: Dict[int, _AutoMappingEntry] = {}
-        self._target_pid: Optional[int] = None
+        self._gate_active: bool = False
 
         # Hook-thread-only: tracks which source identities are currently
         # suppressed-and-held (standard remap only) so a key held across a
@@ -368,7 +378,15 @@ class RemapperEngine:
             auto_mapping.setdefault(auto.key.vk_code, _AutoMappingEntry(entry_id=auto.id, key=auto.key, mode=auto.mode))
 
         selected = window_select_state.selected
-        target_pid = selected.pid if selected is not None else None
+        # Arms window_select.py's own background thread with which exe to
+        # keep resolving a live pid for -- see cached_target_pid()'s
+        # docstring for why the actual pid comparison in _handle() reads
+        # THAT (continuously updated independent of this method ever being
+        # called again) rather than a value snapshotted here. This call
+        # only needs to land once per actual target change; cheap enough to
+        # still just do it unconditionally every frame.
+        window_select.set_target_exe_name(selected.exe_name if selected is not None else None)
+        gate_active = selected is not None
 
         to_release_toggle: List[KeyBind] = []
         to_release_hold: List[_PendingHoldTap] = []
@@ -389,7 +407,7 @@ class RemapperEngine:
 
             self._mapping = mapping
             self._auto_mapping = auto_mapping
-            self._target_pid = target_pid
+            self._gate_active = gate_active
 
         for pending in to_release_hold:
             pending.timer.cancel()
@@ -429,11 +447,13 @@ class RemapperEngine:
         with self._lock:
             mapping = self._mapping
             auto_mapping = self._auto_mapping
-            target_pid = self._target_pid
+            gate_active = self._gate_active
 
-        # Evaluated live, every event -- see module docstring's
-        # "Window-filter gating" section.
-        gate_open = target_pid is None or window_select.cached_foreground_pid() == target_pid
+        # Evaluated live, every event, against window_select's own
+        # independently-maintained live target pid -- see module docstring's
+        # "Window-filter gating" section and cached_target_pid()'s own
+        # docstring for why this isn't a value snapshotted in update_snapshot().
+        gate_open = not gate_active or window_select.cached_foreground_pid() == window_select.cached_target_pid()
 
         if gate_open != self._gate_open:
             self._gate_open = gate_open
