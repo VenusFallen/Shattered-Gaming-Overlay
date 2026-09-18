@@ -137,11 +137,18 @@ def main() -> None:
     runner_params.app_window_params.restore_previous_geometry = True
     runner_params.app_window_params.resizable = True
     runner_params.app_window_params.borderless = True
-    # Drag is hand-rolled in titlebar.py; resize uses Hello ImGui's own
-    # corner zone as-is (doesn't overlap the titlebar strip); close gets a
-    # themed button instead of Hello ImGui's generic one.
+    # Drag AND resize are both hand-rolled in titlebar.py (native Win32
+    # WM_NCLBUTTONDOWN move-loop) instead of using Hello ImGui's own
+    # borderless drag/resize zones; close gets a themed button instead of
+    # Hello ImGui's generic one. borderless_resizable was left True here
+    # until a real bug was found live 2026-09-17: Hello ImGui's own corner-
+    # resize implementation tracks its drag state manually at the ImGui
+    # level rather than handing off to the OS's native resize loop, and
+    # could start the window continuously following the cursor after a
+    # single click even with the mouse button no longer held, needing a
+    # second click to stop. See titlebar.py's render_resize_grip().
     runner_params.app_window_params.borderless_movable = False
-    runner_params.app_window_params.borderless_resizable = True
+    runner_params.app_window_params.borderless_resizable = False
     runner_params.app_window_params.borderless_closable = False
     runner_params.app_window_params.top_most = False  # never always-on-top
     runner_params.app_window_params.hidden = False

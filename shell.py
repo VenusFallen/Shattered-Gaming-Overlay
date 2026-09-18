@@ -115,3 +115,8 @@ def render_frame(state: AppState) -> None:
     render_panel = _PANEL_RENDERERS.get(state.active_panel, dashboard.render)
     render_panel(ctx)
     imgui.end_child()
+
+    # Drawn last so it layers on top of whatever panel content happens to
+    # sit in that corner -- see titlebar.py's render_resize_grip() docstring
+    # for why this replaces Hello ImGui's own borderless-resize corner.
+    titlebar.render_resize_grip(ctx)

@@ -4,12 +4,12 @@ main.py runs with `app_window_params.borderless = True`, which drops the OS
 title bar (drag region + min/max/close). This module rebuilds a themed
 replacement strip that shell.py renders at the top of every frame.
 
-`borderless_movable`/`_closable` are left False: Hello ImGui's generic drag
-zone and close button are unstyled and have no min/max affordance, so drag
-is hand-rolled via the Win32 "release capture, send WM_NCLBUTTONDOWN/
-HTCAPTION" trick, and close/min/max are themed buttons instead.
-`borderless_resizable` stays True -- Hello ImGui's resize-corner zone
-doesn't overlap this strip, nothing to hand-roll there.
+`borderless_movable`/`_resizable`/`_closable` are all left False: Hello
+ImGui's generic drag/resize zones are unstyled, have no min/max affordance,
+and (resize specifically) had a real bug -- see `render_resize_grip()`'s
+docstring. Drag and resize are both hand-rolled instead via the Win32
+"release capture, send WM_NCLBUTTONDOWN/HT*" trick, and close/min/max are
+themed buttons instead of Hello ImGui's generic ones.
 
 imgui_bundle has no minimize/maximize/close call of its own; those go
 through raw Win32 `ShowWindow` via ctypes (same pattern as input_hooks.py).
@@ -43,8 +43,10 @@ _SW_MINIMIZE = 6
 _SW_MAXIMIZE = 3
 _WM_NCLBUTTONDOWN = 0x00A1
 _HTCAPTION = 2
+_HTBOTTOMRIGHT = 17
 
 BAR_HEIGHT_UNSCALED = 38.0
+_RESIZE_GRIP_SIZE = 16.0
 
 
 def _hwnd() -> int:
@@ -99,6 +101,14 @@ def _start_native_drag() -> None:
         return
     user32.ReleaseCapture()
     user32.SendMessageW(hwnd, _WM_NCLBUTTONDOWN, _HTCAPTION, 0)
+
+
+def _start_native_resize() -> None:
+    hwnd = _hwnd()
+    if not hwnd:
+        return
+    user32.ReleaseCapture()
+    user32.SendMessageW(hwnd, _WM_NCLBUTTONDOWN, _HTBOTTOMRIGHT, 0)
 
 
 def _bar_button(theme, str_id: str, icon: str, hover_color, size: float) -> bool:
@@ -170,3 +180,60 @@ def render(ctx: PanelContext) -> None:
 
     imgui.end_child()
     imgui.pop_style_color()
+
+
+def render_resize_grip(ctx: PanelContext) -> None:
+    """Bottom-right resize handle, hand-rolled the same native-Win32 way
+    the title bar drag above is (`WM_NCLBUTTONDOWN`/`HT*`, handing the
+    whole drag off to Windows' own move-loop) instead of using Hello
+    ImGui's built-in `borderless_resizable` corner (left False in main.py).
+
+    That built-in implementation tracks its own manual drag state at the
+    ImGui level rather than handing off to the OS -- per its own docs, "a
+    drag zone is displayed at the bottom-right... when the mouse is over
+    it" -- and has a real, reproducible bug: clicking the corner could
+    start the window continuously following the cursor even after the
+    mouse button was released, needing a second click to stop it. Found
+    live 2026-09-17. The native WM_NCLBUTTONDOWN approach can't have this
+    class of bug -- once sent, Windows' own move-loop owns the drag
+    entirely until the OS itself sees the button released, the same
+    guarantee `_start_native_drag()` already relies on for the title bar.
+
+    Drawn every frame regardless of active panel (call this once from
+    shell.py's render_frame, same as titlebar.render()), positioned via the
+    main viewport's absolute screen rect so it sits in the true corner
+    regardless of which panel/child region is currently under it. Skipped
+    while maximized -- nothing to resize."""
+    if _is_maximized():
+        return
+
+    theme = ctx.theme
+    viewport = imgui.get_main_viewport()
+    x = viewport.pos.x + viewport.size.x - _RESIZE_GRIP_SIZE
+    y = viewport.pos.y + viewport.size.y - _RESIZE_GRIP_SIZE
+
+    imgui.set_cursor_screen_pos(imgui.ImVec2(x, y))
+    imgui.push_id("resize-grip")
+    imgui.invisible_button("##resize-grip", imgui.ImVec2(_RESIZE_GRIP_SIZE, _RESIZE_GRIP_SIZE))
+    hovered = imgui.is_item_hovered()
+    if hovered:
+        imgui.set_mouse_cursor(imgui.MouseCursor_.resize_nwse)
+    if imgui.is_item_activated():
+        _start_native_resize()
+    imgui.pop_id()
+
+    # Minimal visual affordance -- three short diagonal lines, the same
+    # corner-resize-grip convention most desktop apps use, drawn on top of
+    # the invisible button so it stays discoverable without a hover-only
+    # reveal (unlike Hello ImGui's own version, which only appears on hover).
+    draw_list = imgui.get_window_draw_list()
+    color = imgui.get_color_u32(theme.accent_text if hovered else theme.border_strong)
+    pad = 3.0
+    for i in range(3):
+        offset = i * 4.0
+        draw_list.add_line(
+            imgui.ImVec2(x + _RESIZE_GRIP_SIZE - pad - offset, y + _RESIZE_GRIP_SIZE - pad),
+            imgui.ImVec2(x + _RESIZE_GRIP_SIZE - pad, y + _RESIZE_GRIP_SIZE - pad - offset),
+            color,
+            1.5,
+        )
