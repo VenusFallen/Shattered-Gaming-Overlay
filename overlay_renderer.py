@@ -1,33 +1,8 @@
 """overlay_renderer.py -- DX11 2D geometry + text renderer for the HUD
-overlay.
-
-Text rendering: GDI renders a string to an in-memory bitmap, uploaded as an
-R8_UNORM D3D11 texture, sampled via SRV onto a textured quad.
-
-Builds on dx11_bridge.py. Provides:
-  * Renderer -- manages shaders, blend state, constant buffers, vertex buffers
-  * draw_line                -- single line segment (as two triangles)
-  * draw_rect / draw_rect_filled -- axis-aligned rectangle, hollow/filled
-  * draw_rounded_rect / draw_rounded_rect_filled -- rounded rectangle (Stats box)
-  * draw_circle / draw_circle_filled -- circle, hollow/filled (crosshair, badges)
-  * draw_text / measure_text -- GDI-backed text rendering (Stats box, badges)
-
-All colors are (r, g, b, a) floats 0-1, NOT premultiplied by the caller --
-the pixel shaders below premultiply before writing to the DirectComposition
-premultiplied-alpha swap chain (see dcomp_bridge.py).
-
-Usage:
-    r = Renderer(device, context, width, height)
-    # each frame:
-    r.begin()
-    r.draw_line(x0, y0, x1, y1, thickness, col)
-    r.draw_circle(cx, cy, radius, col, segments=64)
-    r.draw_text("42", x, y, col, font_size=18)
-    r.end()
-    # on resize:
-    r.resize(new_w, new_h)
-    # on shutdown:
-    r.release()
+overlay, built on dx11_bridge.py. Text rendering rasterizes via GDI to an
+in-memory bitmap, uploaded as an R8_UNORM D3D11 texture. Caller colors are
+(r, g, b, a) floats 0-1, NOT premultiplied -- the pixel shaders premultiply
+before writing to the DirectComposition premultiplied-alpha swap chain.
 """
 
 from __future__ import annotations
@@ -365,12 +340,8 @@ def _dev(dev: int, name: str, res_type, arg_types: list, *args):
 
 
 class Renderer:
-    """DX11 2D geometry + text renderer for the HUD overlay (crosshair, Stats
-    box, module status badges).
-
-    Thread-safety: call all draw_* methods from the same thread that created
-    it (the HUD overlay's own background render thread -- see hud_overlay.py).
-    """
+    # DX11 2D geometry + text renderer (crosshair, Stats box, status badges). Call all draw_* methods from the
+    # same thread that created it -- the HUD overlay's own background render thread, see hud_overlay.py.
 
     def __init__(self, device: int, context: int, width: int, height: int):
         self._dev = device
@@ -664,10 +635,7 @@ class Renderer:
 
     def draw_rounded_rect_filled(self, x: float, y: float, w: float, h: float,
                                   radius: float, col: tuple, segments_per_corner: int = 8):
-        """Filled rounded rectangle -- the Stats box's plain card background.
-        Triangle-fanned from the rect's own center, same technique
-        draw_circle_filled uses (valid here since a rounded rect is convex
-        and its center is always interior for radius <= min(w,h)/2)."""
+        # Triangle-fanned from the rect's own center, same as draw_circle_filled -- valid since a rounded rect is convex.
         pts = self._rounded_rect_points(x, y, w, h, radius, segments_per_corner)
         if len(pts) < 3:
             return
@@ -735,10 +703,7 @@ class Renderer:
 
     def draw_text(self, text: str, x: float, y: float, col: tuple,
                   font_size: int = 14, font_face: str = "Segoe UI") -> int:
-        """Render *text* using GDI into a one-channel texture, then draw it
-        as a textured quad. col is (r,g,b,a) straight (non-premultiplied) --
-        the text pixel shader premultiplies by the glyph alpha itself.
-        Returns the pixel width of the rendered text."""
+        # col is straight (non-premultiplied) -- the text pixel shader premultiplies by glyph alpha itself.
         if not text:
             return 0
         try:

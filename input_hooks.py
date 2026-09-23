@@ -1,30 +1,7 @@
-"""input_hooks.py -- pure user-mode input capture via
-`SetWindowsHookEx(WH_KEYBOARD_LL / WH_MOUSE_LL)`. No driver, no ViGEm, no
-game-process access.
-
-`HookManager` installs the hooks, pumps the Win32 message loop on its own
-thread, and dispatches typed events (`KeyEvent`, `MouseButtonEvent`,
-`MouseMoveEvent`, `MouseScrollEvent`) to registered callbacks:
-
-    hm = HookManager()
-    hm.on_key_down(lambda e: print(e))
-    hm.start()
-    ...
-    hm.stop()
-
-Each event carries `injected` (Windows' LLKHF_INJECTED/LLMHF_INJECTED bit --
-true for any synthetic input) and `from_self` (true only for input we
-injected via `input_inject.py`, matched by dwExtraInfo). Consumers should key
-off `from_self` to avoid feedback loops on their own re-injected events while
-still treating other injected input as a legitimate trigger.
-
-Observe-only by default: CallNextHookEx always runs. A callback returning
-`True` suppresses the event -- exposed for the remapper, not used here.
-
-Callbacks run on the hook-owning thread and are subject to Windows'
-low-level-hook responsiveness timeout: slow/blocking work causes system-wide
-input lag or silent hook removal. Keep callbacks fast; hand off real work to
-another thread.
+"""Pure user-mode input capture via SetWindowsHookEx (WH_KEYBOARD_LL / WH_MOUSE_LL).
+No driver, no ViGEm, no game-process access. `HookManager` installs the hooks,
+pumps the Win32 message loop on its own thread, and dispatches typed events
+(`KeyEvent`, `MouseButtonEvent`, `MouseMoveEvent`, `MouseScrollEvent`) to callbacks.
 """
 
 from __future__ import annotations
@@ -33,7 +10,7 @@ import ctypes
 import sys
 import threading
 from ctypes import wintypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, List, Optional
 
 if not sys.platform.startswith("win"):
@@ -154,8 +131,7 @@ kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
 
 def get_key_name(vk_code: int, scan_code: int = 0, extended: bool = False) -> str:
-    """Best-effort human-readable name for a vk/scan code, e.g. 'F1', 'Left Ctrl'.
-    Falls back to 'VK_0x..' if Windows doesn't have a name for it."""
+    """Best-effort human-readable name for a vk/scan code (e.g. 'F1'); falls back to 'VK_0x..'."""
     if not scan_code:
         scan_code = user32.MapVirtualKeyW(vk_code, MAPVK_VK_TO_VSC)
     lparam = (scan_code & 0xFF) << 16
@@ -173,6 +149,10 @@ def get_key_name(vk_code: int, scan_code: int = 0, extended: bool = False) -> st
 # ---------------------------------------------------------------------------
 
 
+# injected: Windows' LLKHF_INJECTED/LLMHF_INJECTED bit, true for any synthetic input.
+# from_self: true only for input we injected ourselves (matched by dwExtraInfo) -- use this
+# to avoid feedback loops on our own re-injected events while still treating other injected
+# input as a legitimate trigger.
 @dataclass(frozen=True)
 class KeyEvent:
     vk_code: int
@@ -224,9 +204,7 @@ MouseScrollCallback = Callable[[MouseScrollEvent], Optional[bool]]
 
 
 def _dispatch(callbacks: List[Callable], event) -> bool:
-    """Call every callback with `event`; return True if any asked to suppress.
-    Exceptions are swallowed -- one escaping a ctypes hook callback can crash
-    the process or wedge the system-wide input hook."""
+    """Calls every callback with `event`, returns True if any asked to suppress; exceptions are swallowed so one bad callback can't crash the hook thread."""
     suppress = False
     for cb in list(callbacks):
         try:
@@ -242,12 +220,7 @@ def _dispatch(callbacks: List[Callable], event) -> bool:
 
 
 class HookManager:
-    """Installs WH_KEYBOARD_LL / WH_MOUSE_LL and dispatches typed events.
-
-    Runs its own Win32 message pump on a dedicated background thread (these
-    hooks only ever deliver on the thread that installed them), so start()
-    never blocks the caller's own thread.
-    """
+    """Installs WH_KEYBOARD_LL / WH_MOUSE_LL and dispatches typed events; runs its own Win32 message pump on a dedicated background thread since these hooks only deliver on the thread that installed them."""
 
     def __init__(self) -> None:
         self._keyboard_callbacks_down: List[KeyCallback] = []
@@ -263,8 +236,7 @@ class HookManager:
 
         self._keyboard_hook = None
         self._mouse_hook = None
-        # Strong refs to the ctypes trampolines -- GC'ing these while the
-        # hook is installed makes Windows call into freed memory.
+        # Strong refs to the ctypes trampolines -- GC'ing these while installed would crash into freed memory.
         self._keyboard_proc = HOOKPROC(self._keyboard_hook_proc)
         self._mouse_proc = HOOKPROC(self._mouse_hook_proc)
 
@@ -319,9 +291,7 @@ class HookManager:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self, timeout: float = 5.0) -> None:
-        """Install both hooks and start pumping messages on a new thread.
-        Blocks until confirmed installed (or raises on failure), so a
-        `stop()` immediately after `start()` is always safe."""
+        """Installs both hooks and blocks until confirmed installed (or raises), so a stop() immediately after start() is always safe."""
         if self.is_running:
             return
 

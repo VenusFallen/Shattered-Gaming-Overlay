@@ -1,40 +1,9 @@
-"""dcomp_bridge.py -- DirectComposition COM vtable wrappers.
-
-DirectComposition (dcomp.dll) lets the HUD overlay register a DXGI swap
-chain directly in DWM's composition tree as a separate visual. When hardware
-Multi-Plane Overlay (MPO) is available, DWM assigns the overlay to its own
-GPU plane and the game's own swap chain can still use Independent Flip --
-zero composition overhead. This is why this project uses DirectComposition
-rather than any game-swap-chain hook.
-
-Only the handful of methods the HUD overlay uses are wrapped here. Vtable
+"""dcomp_bridge.py -- DirectComposition (dcomp.dll) COM vtable wrappers.
+Lets the HUD overlay register its DXGI swap chain directly in DWM's
+composition tree as its own visual, so hardware Multi-Plane Overlay can give
+it its own GPU plane while the game's swap chain keeps Independent Flip.
+Only the handful of methods the HUD overlay needs are wrapped; vtable
 offsets are fixed by the Windows SDK ABI.
-
-IDCompositionDevice vtable (IUnknown 0-2, own methods from 3):
-    Commit                  = 3
-    WaitForCommitCompletion = 4
-    GetFrameStatistics      = 5
-    CreateTargetForHwnd     = 6
-    CreateVisual            = 7
-
-IDCompositionTarget vtable (IUnknown 0-2):
-    SetRoot = 3
-
-IDCompositionVisual vtable (IUnknown 0-2, overloaded pairs count as separate
-slots):
-    SetOffsetX(float)          = 3
-    SetOffsetX(anim*)          = 4
-    SetOffsetY(float)          = 5
-    SetOffsetY(anim*)          = 6
-    SetTransform(matrix*)      = 7
-    SetTransform(iface*)       = 8
-    SetTransformParent         = 9
-    SetEffect                  = 10
-    SetBitmapInterpolationMode = 11
-    SetBorderMode               = 12
-    SetClip(rect*)              = 13
-    SetClip(iface*)             = 14
-    SetContent                  = 15
 """
 
 from __future__ import annotations

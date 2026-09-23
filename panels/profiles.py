@@ -23,21 +23,8 @@ _SAVE_FLASH_SEC = 1.5
 
 
 def _render_target_executable_picker(ctx: PanelContext, profile) -> None:
-    """Dropdown for `ProfileDef.target_executable`, replacing a plain typed-
-    in exe name with a pick from currently running processes -- the same
-    `WindowSelectState.available` list Settings' Target Window section uses
-    (kept warm globally every frame by main.py, not scoped to that panel
-    being open). Mirrors that section's own layout: the currently selected
-    value is shown above the filter bar, not just as the combo's own closed-
-    state preview.
-
-    Force-refreshes the process list on the exact click that opens the combo
-    (`is_item_activated()`, not just "opened" -- that's true every frame the
-    popup stays open, which would re-enumerate windows every frame instead
-    of once). No separate Refresh button needed here -- opening the dropdown
-    IS the refresh trigger. Doesn't touch Settings' own Window Select
-    section or its Refresh button, a different feature/list-consumer of the
-    same underlying `available` list."""
+    # Dropdown over the same WindowSelectState.available list Settings' Target Window section uses.
+    # Refreshes on is_item_activated() (the exact open click), not every frame the popup stays open.
     theme = ctx.theme
     state = ctx.state.profiles
 
@@ -46,10 +33,7 @@ def _render_target_executable_picker(ctx: PanelContext, profile) -> None:
     opened = imgui.begin_combo("##targetexe", preview)
     if imgui.is_item_activated():
         window_select.force_refresh(ctx.state.window_select)
-        # `auto_switch_filter_text` is one shared field, not per-profile (see
-        # its own comment in app_state.py) -- without clearing it here,
-        # filtering in one profile's picker leaves that text still applied
-        # the next time ANY profile's picker is opened.
+        # `auto_switch_filter_text` is shared, not per-profile -- clear it so a stale filter doesn't leak into the next picker.
         state.auto_switch_filter_text = ""
     if imgui.is_item_hovered():
         imgui.set_tooltip(
@@ -138,10 +122,7 @@ def render(ctx: PanelContext) -> None:
                 raw_text = None
             if raw_text is not None:
                 profiles_engine.import_profile(ctx.state, raw_text)
-                # Malformed/unreadable file -> import_profile() returns None
-                # and nothing changes; failing silent-but-safe here matches
-                # this panel's other no-op-on-invalid-input buttons (e.g.
-                # blank Create Profile name).
+                # Malformed/unreadable file -> returns None and fails silent-but-safe, same as this panel's other no-ops.
     if imgui.is_item_hovered():
         imgui.set_tooltip("Add a profile someone else exported to you as a new profile in your own list.")
 
@@ -191,10 +172,7 @@ def render(ctx: PanelContext) -> None:
 
             if not profile.protected:
                 imgui.same_line()
-                # right_pinned_cursor_x(), not a fixed offset -- a long
-                # user-typed profile name (or the Saved! flash badge just
-                # before this) can run wider than usual; falling back to
-                # flow instead of a fixed X avoids drawing this on top of it.
+                # right_pinned_cursor_x(), not a fixed offset -- a long name or the Saved! badge can run wider than usual.
                 imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
                 if imgui.button(f"{fa.ICON_FA_TRASH}##removeprofile"):
                     remove_id = profile.id

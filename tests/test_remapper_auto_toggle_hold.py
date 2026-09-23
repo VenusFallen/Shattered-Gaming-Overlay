@@ -1,37 +1,10 @@
-"""tests/test_remapper_auto_toggle_hold.py -- unit coverage for
-RemapperEngine's two Auto Toggle/Hold state machines (AutoToggleHoldEntry,
-`RemapperState.auto_entries`) and every stuck-key cleanup path that can
-leave one active: entry edit/disable/mode-switch/remove, profile switch
-(which looks identical here -- apply_profile() just replaces
-AppState.remapper.auto_entries wholesale, see remapper.py's module
-docstring), window-filter focus loss, and engine stop()/exit.
-
-Toggle coverage here is a direct relocation of what used to live in
-tests/test_remapper_toggle.py (deleted as part of this redesign) back when
-Toggle was a mode on standard RemapEntry -- same assertions, retargeted at
-AutoToggleHoldEntry/`_handle_auto_toggle`. Hold coverage is new: the timer-
-based tap mechanism (`_handle_auto_hold`/`_finish_hold_tap`) is exercised
-with a fake timer factory (`engine._timer_factory`) so tests never actually
-sleep `_AUTO_HOLD_TAP_GAP_MS` -- the fake timer's `fn` is invoked manually
-to simulate the gap elapsing, same idea as test_stats_percentile_lows.py's
-fake `time.monotonic` for time-dependent logic without real waits.
-
-Also covers the standard RemapEntry regression (fixed 2026-08-31, carried
-forward from the old suite): a standard remap held through a gate close or
-stop() used to stay stuck too.
-
-Exercises RemapperEngine._handle() and update_snapshot() directly rather
-than a live WH_KEYBOARD_LL hook or input_hooks' KeyEvent/MouseButtonEvent
-wrappers -- _handle() is the one place a physical key/mouse-button event
-actually gets matched, and there's no other per-event entry point without a
-real hook installed (which this suite must never touch -- see
-agent-rules.md and this task's testing constraints). A fresh
-RemapperEngine() never calls start(), so no hook is ever installed.
-input_inject.send_key/send_mouse_button are monkeypatched so nothing here
-ever calls real SendInput, and window_select.cached_foreground_pid is
-monkeypatched so nothing depends on real OS focus. Never touches
-profiles.json/settings.json -- AppState/RemapperState/WindowSelectState are
-built in memory only.
+"""Unit coverage for RemapperEngine's two Auto Toggle/Hold state machines (AutoToggleHoldEntry,
+`RemapperState.auto_entries`) and every stuck-key cleanup path that can leave one active: entry
+edit/disable/mode-switch/remove, profile switch, window-filter focus loss, and engine stop()/exit. Also
+covers the standard RemapEntry regression where a remap held through a gate close or stop() stayed stuck.
+Exercises RemapperEngine._handle()/update_snapshot() directly rather than a live hook -- a fresh
+RemapperEngine() never calls start(). input_inject.send_key/send_mouse_button and
+window_select.cached_foreground_pid are monkeypatched; nothing here touches real disk or hooks.
 """
 
 from __future__ import annotations
@@ -385,11 +358,8 @@ def test_hold_second_edge_before_first_tap_finishes_force_completes_it(engine):
 
 
 # ---------------------------------------------------------------------------
-# OS key-repeat suppression -- found live 2026-09-11: holding a physical key
-# down makes Windows resend "down" transitions through WH_KEYBOARD_LL at the
-# keyboard repeat rate, indistinguishable from a fresh press at this layer.
-# Simulated here the same way a real repeat arrives: multiple `_press()`
-# calls with no `_release()` between them.
+# OS key-repeat suppression -- a held physical key makes Windows resend "down" transitions through
+# WH_KEYBOARD_LL, indistinguishable from a fresh press; simulated here via multiple `_press()` calls with no `_release()` between them.
 # ---------------------------------------------------------------------------
 
 
@@ -579,11 +549,7 @@ def test_cleanup_forces_release_of_toggle_on_focus_loss(engine, monkeypatch):
 
 
 def test_gate_reflects_a_live_target_pid_change_with_no_new_update_snapshot_call(engine, monkeypatch):
-    # The whole point of the cached_target_pid() architecture (see
-    # remapper.py's module docstring, "Window-filter gating"): the gate must
-    # notice the target game restarting with a new pid WITHOUT update_snapshot()
-    # (Companion-frame-driven) ever being called again -- window_select.py's
-    # own background thread is what's supposed to keep this current instead.
+    # The gate must notice the target game restarting with a new pid without update_snapshot() being called again -- window_select's background thread keeps cached_target_pid() current instead.
     target = ProcessInfo(pid=999, exe_name="game.exe", window_title="Game")
     monkeypatch.setattr(window_select, "cached_target_pid", lambda: 999)
     monkeypatch.setattr(window_select, "cached_foreground_pid", lambda: 999)
@@ -593,12 +559,7 @@ def test_gate_reflects_a_live_target_pid_change_with_no_new_update_snapshot_call
     input_inject.send_key.assert_called_once_with(DEST.vk_code, key_up=False)
     input_inject.send_key.reset_mock()
 
-    # The game "restarted" and got a new pid (1234) -- simulated exactly as
-    # window_select's background thread would update it: no _sync()/
-    # update_snapshot() call here at all, only cached_target_pid() changing.
-    # cached_foreground_pid() still reports the OLD pid 999 (nothing has
-    # focus at that literal instant -- normal mid-relaunch transient), so the
-    # gate should now read as closed against the new target.
+    # The game "restarted" with a new pid (1234) -- no _sync()/update_snapshot() call, only cached_target_pid() changing. cached_foreground_pid() still reports the OLD pid, so the gate should read as closed.
     monkeypatch.setattr(window_select, "cached_target_pid", lambda: 1234)
     result = engine._handle(0x51, up=False, name="Q", time_ms=0)  # unrelated key
     assert result is None  # gate closed -- 999 (foreground) != 1234 (new target)
@@ -612,11 +573,7 @@ def test_gate_reflects_a_live_target_pid_change_with_no_new_update_snapshot_call
 
 
 def test_gate_close_listener_fires_exactly_on_the_open_to_closed_transition(engine, monkeypatch):
-    # Added for macro_engine.py's handle_gate_closed() -- a live Hold/Toggle
-    # macro session has no other way to learn its trigger was released while
-    # the targeted process was unfocused, so it needs this signal directly,
-    # not just the effective-event stream (which stops publishing while the
-    # gate is closed). See remapper.py's add_gate_close_listener() docstring.
+    # Added for macro_engine.py's handle_gate_closed() -- the only way a live Hold/Toggle macro session learns its trigger was released while the targeted process was unfocused.
     target = ProcessInfo(pid=999, exe_name="game.exe", window_title="Game")
     calls = []
     engine.add_gate_close_listener(lambda: calls.append(1))
@@ -738,11 +695,8 @@ def test_stop_cancels_and_releases_pending_hold_tap(engine):
 
 
 # ---------------------------------------------------------------------------
-# Regression (fixed 2026-08-31, carried forward): a standard remap held
-# through a gate close or stop() used to stay stuck -- _force_release_pending()
-# only knew about _toggle_on, and _handle() returns early while the gate is
-# closed, before the standard remap's own release-on-physical-up path ever
-# ran. See remapper.py's module docstring, "Stuck-key prevention" section.
+# Regression: a standard remap held through a gate close or stop() used to stay stuck, since
+# _force_release_pending() only knew about _toggle_on and _handle() returns early while the gate is closed.
 # ---------------------------------------------------------------------------
 
 

@@ -1,17 +1,4 @@
-"""updater.py -- self-update for Shattered Gaming Overlay against GitHub
-Releases: Check -> Download -> Install flow. Downloads the new release, then
-re-runs the installer silently in the background and lets the app close
-itself so the install can complete. Stdlib only (urllib, zipfile, json).
-
-`repo_configured()` lets callers (panels/settings.py) tell "no repo
-configured" apart from "configured, just no releases yet" -- only the
-former should suppress the "View releases" link.
-
-`UpdateManager` hands background-thread results back to the render loop via
-a lock-guarded snapshot (`sync_to()`, called from main.py's `_show_gui`),
-the same pattern remapper.py/macro_engine.py/hud_overlay.py use for their
-own `update_snapshot()`.
-"""
+"""Self-update against GitHub Releases: check, download, then hand off to the installer. Stdlib only."""
 
 from __future__ import annotations
 
@@ -31,8 +18,7 @@ from pathlib import Path
 from typing import Optional
 import urllib.request
 
-# Guarded import -- keeps this module importable without pulling in
-# imgui_bundle; only needed here for a type hint.
+# Guarded import so this module stays importable without pulling in imgui_bundle.
 try:  # pragma: no cover - only used for type hints
     from app_state import SettingsState, UpdateStatus
 except Exception:  # pragma: no cover
@@ -41,20 +27,16 @@ except Exception:  # pragma: no cover
 
 _log = logging.getLogger("shattered_overlay.updater")
 
-# Placeholder repo/asset configuration -- see module docstring.
 _APP_REPO = "VenusFallen/Shattered-Gaming-Overlay"
 _API = "https://api.github.com/repos/{repo}/releases/latest"
 
-# TODO(release): confirm/adjust once the real installer + release pipeline
-# produces its actual asset names.
+# Must match build.bat's release zip naming and ShatteredGamingOverlay.iss's OutputBaseFilename.
 _ASSET_ZIP_PREFIX = "ShatteredGamingOverlay_v"
 _INSTALLER_EXE_NAME = "ShatteredGamingOverlay_Setup.exe"
 
 
 def repo_configured() -> bool:
-    """True once `_APP_REPO` has been pointed at a real GitHub repo. Lets
-    panels/settings.py avoid presenting a "View releases on GitHub" link
-    that would 404, without hardcoding the placeholder check in the UI."""
+    """True once _APP_REPO points at a real repo, not the placeholder."""
     return "/" in _APP_REPO and not _APP_REPO.startswith("REPLACE_ME")
 
 
@@ -96,9 +78,7 @@ def _download_url(url: str, progress_cb=None) -> bytes:
 
 
 def check_app_update(current_version: str) -> tuple[bool, str]:
-    """Returns (update_available, latest_version_str). Raises on network
-    error -- including an unconfigured repo, which callers should surface as
-    a normal check-failed error."""
+    """Returns (update_available, latest_version_str). Raises on network error."""
     data = _fetch_release(_APP_REPO)
     latest = data.get("tag_name", "").lstrip("v")
     cur = current_version.lstrip("v")
@@ -106,8 +86,7 @@ def check_app_update(current_version: str) -> tuple[bool, str]:
 
 
 def _find_zip_asset_url(data: dict) -> str:
-    """Pick the release zip asset: match extension + expected name prefix
-    first (avoids grabbing an unrelated asset), fall back to any .zip."""
+    """Pick the release zip asset matching the expected prefix, else any .zip."""
     assets = data.get("assets", [])
     prefix = _ASSET_ZIP_PREFIX.lower()
     for a in assets:
@@ -121,10 +100,7 @@ def _find_zip_asset_url(data: dict) -> str:
 
 
 def download_app(progress_cb=None) -> Path:
-    """Download the latest release zip and extract the installer exe into a
-    fresh temp directory. Only works in a frozen (PyInstaller) build --
-    raises otherwise. Returns the extracted installer path; nothing is
-    executed here, call launch_installer_and_quit() with it separately."""
+    """Download the latest release zip, extract the installer exe to a temp dir, and return its path (does not run it)."""
     if not getattr(sys, "frozen", False):
         raise RuntimeError("Self-update only works in the packaged exe")
 
@@ -150,15 +126,12 @@ def download_app(progress_cb=None) -> Path:
 
 
 def _quote_ps_single(value: str) -> str:
-    """Wrap `value` in single quotes for a PowerShell -Command string,
-    doubling embedded single quotes per PowerShell's escape rule."""
+    """Wrap value in single quotes for a PowerShell -Command string."""
     return "'" + str(value).replace("'", "''") + "'"
 
 
 def _build_relaunch_command(pid: int, installer_path: Path, install_args: list[str]) -> str:
-    """Build the PowerShell -Command string that waits for process `pid` to
-    fully exit, then starts `installer_path` with `install_args`. Pure
-    function (no subprocess spawning) so it's unit-testable directly."""
+    """Build the PowerShell command that waits for pid to exit, then starts the installer."""
     arg_list = ", ".join(_quote_ps_single(a) for a in install_args)
     return (
         f"Wait-Process -Id {pid} -Timeout 10 -ErrorAction SilentlyContinue; "
@@ -168,17 +141,7 @@ def _build_relaunch_command(pid: int, installer_path: Path, install_args: list[s
 
 
 def _quote_cmdline_arg(value: str) -> str:
-    """Quote `value` as a single Win32 command-line argument per the
-    `CommandLineToArgvW` parsing rules (what `ShellExecuteExW`'s
-    `lpParameters` is parsed with) -- a different layer than
-    `_quote_ps_single`'s PowerShell quoting above.
-
-    A run of N backslashes before a literal `"` becomes 2N+1 backslashes
-    then `"`; a run at the very end of the argument becomes 2N backslashes.
-    Same algorithm as `subprocess.list2cmdline`, reproduced here since that
-    one is only reachable via subprocess's argv-list APIs, not a single
-    `lpParameters` string.
-    """
+    """Quote value as a single Win32 command-line argument (CommandLineToArgvW rules, same algorithm as subprocess.list2cmdline)."""
     if value and not any(c in value for c in ' \t\n\v"'):
         return value
     out = ['"']
@@ -200,16 +163,7 @@ def _quote_cmdline_arg(value: str) -> str:
 
 
 def _build_shell_execute_parameters(ps_command: str) -> str:
-    """Build the `lpParameters` string `ShellExecuteExW` expects for
-    launching `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy
-    Bypass -WindowStyle Hidden -Command <ps_command>`.
-
-    `lpParameters` is one raw command-line string parsed by
-    `CommandLineToArgvW`, not an argv list -- each argument (including
-    `ps_command`, which already carries its own inner PowerShell quoting) is
-    quoted independently via `_quote_cmdline_arg` so this outer layer can't
-    corrupt what `_build_relaunch_command` already produced.
-    """
+    """Build the lpParameters string for launching powershell.exe with ps_command (one raw command line, each arg quoted independently)."""
     args = [
         "-NoProfile",
         "-NonInteractive",
@@ -220,10 +174,7 @@ def _build_shell_execute_parameters(ps_command: str) -> str:
     return " ".join(_quote_cmdline_arg(a) for a in args)
 
 
-# ShellExecuteExW ("runas") bindings -- see launch_installer_and_quit()'s
-# docstring for why elevation is triggered here rather than via a
-# subprocess.Popen'd watcher. Raw ctypes, no pywin32, matching this
-# project's convention elsewhere (tray_icon.py, titlebar.py, window_select.py).
+# ShellExecuteExW ("runas") bindings -- raw ctypes, no pywin32, matching this project's convention elsewhere.
 
 _SW_HIDE = 0
 
@@ -245,8 +196,7 @@ if sys.platform == "win32":
             ("lpClass", wintypes.LPCWSTR),
             ("hkeyClass", wintypes.HKEY),
             ("dwHotKey", wintypes.DWORD),
-            # Union with hMonitor in the real struct; this call never uses
-            # the icon/monitor variant, so a plain HANDLE field is enough.
+            # Union with hMonitor in the real struct; unused here, so a plain HANDLE field is enough.
             ("hIcon", wintypes.HANDLE),
             ("hProcess", wintypes.HANDLE),
         ]
@@ -256,9 +206,7 @@ if sys.platform == "win32":
 
 
 def _shell_execute_runas(lpFile: str, lpParameters: str) -> None:
-    """Launch `lpFile` elevated (UAC "runas" verb) via `ShellExecuteExW`,
-    called from this still-alive, foreground, interactive process. Raises
-    OSError on failure."""
+    """Launch lpFile elevated (UAC runas verb) via ShellExecuteExW. Raises OSError on failure."""
     info = _SHELLEXECUTEINFOW()
     info.cbSize = ctypes.sizeof(_SHELLEXECUTEINFOW)
     info.fMask = 0
@@ -289,47 +237,9 @@ def _log_dir() -> Path:
 
 
 def launch_installer_and_quit(installer_path: Path) -> None:
-    """Hand off to the extracted installer, then return so the caller can
-    quit the app.
-
-    Does NOT launch the installer directly. Elevates and starts a detached
-    PowerShell watcher that runs `Wait-Process -Id <this pid>` (10s
-    safety-net timeout) and only starts the installer once this process has
-    actually, fully terminated -- not merely been asked to quit. Without
-    this, the installer's file-copy step can race this process's own
-    exe/dll file lock releasing; Inno Setup's own `AppMutex` check can abort
-    within milliseconds of launch, faster than a Restart-Manager-mediated
-    close-and-wait can complete. Guaranteeing real process death before the
-    installer starts removes the race entirely.
-
-    The watcher is launched via `ShellExecuteExW("runas", ...)` rather than
-    `subprocess.Popen` because the installed app requires admin elevation
-    (PresentMon's FPS tracking needs an elevated ETW session), and a
-    non-elevated, detached PowerShell watcher trying to `Start-Process` an
-    admin-manifested installer fails silently -- confirmed live: the UAC
-    `consent.exe` process appears but the prompt never reaches the
-    interactive desktop. `ShellExecuteExW`'s `runas` verb, called while this
-    process is still alive and owns a foreground GUI window, is the same
-    mechanism Explorer's "Run as administrator" uses and reliably surfaces
-    the UAC dialog. Once approved, the resulting PowerShell process is
-    already elevated, so its later `Start-Process` on the installer inherits
-    that with no second prompt.
-
-    The caller must still make the app quit immediately after this returns
-    (e.g. `hi.get_runner_params().app_shall_exit = True`) -- that's what the
-    watcher is waiting on.
-
-    Install flags (Inno Setup silent-install switches):
-      /VERYSILENT       - no wizard UI
-      /SUPPRESSMSGBOXES - suppress informational message boxes
-      /NORESTART        - never prompt for or force a reboot
-      /LOG=<path>       - write an install log to
-                          %LOCALAPPDATA%\\Shattered Gaming Overlay\\logs
-
-    The watcher runs hidden and detached -- only the OS-owned UAC dialog is
-    ever shown; the installer it launches inherits that same
-    detachment/elevation.
-    """
+    """Hand off to the extracted installer, then return so the caller can quit the app."""
+    # Elevated, detached PowerShell watcher waits for this process to fully exit (avoids a file-lock
+    # race with Inno's AppMutex check) before starting the installer; caller must quit right after this returns.
     if sys.platform != "win32":
         raise RuntimeError("Installer handoff is only supported on Windows")
 
@@ -346,19 +256,13 @@ def launch_installer_and_quit(installer_path: Path) -> None:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_path = log_dir / f"update_install_{timestamp}.log"
     except Exception:
-        # Best-effort only -- a log path we couldn't prepare must never
-        # block the actual update install from proceeding.
+        # Best-effort only -- a failed log path must never block the update install.
         log_path = None
 
     install_args = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"]
     if log_path is not None:
-        # Start-Process -ArgumentList joins array elements onto the child's
-        # raw command line with a bare space, no re-quoting -- confirmed
-        # live: a space-containing element (this path always has one, from
-        # "Shattered Gaming Overlay") arrives at the installer split into
-        # several argv entries, so it silently drops the flag. Embedding our
-        # own quotes around the value (Inno Setup's own documented /LOG=
-        # convention) survives that join intact.
+        # Quote the value ourselves -- Start-Process -ArgumentList splits an unquoted
+        # space-containing path into multiple argv entries and silently drops the flag.
         install_args.append(f'/LOG="{log_path}"')
 
     ps_command = _build_relaunch_command(my_pid, installer_path, install_args)
@@ -367,9 +271,7 @@ def launch_installer_and_quit(installer_path: Path) -> None:
     _shell_execute_runas("powershell.exe", lp_parameters)
 
 
-# UpdateManager -- stateful, thread-safe orchestration. Mirrors
-# remapper.py/hud_overlay.py's "singleton owns background work behind a
-# lock, render thread only calls documented thread-safe methods" pattern.
+# UpdateManager -- stateful, thread-safe orchestration singleton.
 
 
 @dataclass
@@ -383,19 +285,7 @@ class _Status:
 
 
 class UpdateManager:
-    """Owns the Companion window's self-update background work.
-
-    Public API (safe to call from the render thread):
-        start_check(current_version, is_automatic=False)
-        start_download()
-        install_and_quit() -> bool
-        dismiss_auto_prompt()
-        sync_to(settings)
-
-    The actual network calls run on short-lived daemon threads spawned
-    here -- never call check_app_update()/download_app() directly from the
-    render thread.
-    """
+    """Owns the Companion window's self-update background work; network calls run on daemon threads, never call check_app_update()/download_app() directly from the render thread."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -406,8 +296,7 @@ class UpdateManager:
         self._last_checked_display = "Never checked"
         self._installer_path: Optional[Path] = None
         self._auto_prompt_pending = False
-        # Guards against a double-click (or the auto-check racing a manual
-        # click) spawning two overlapping worker threads.
+        # Guards against a double-click or auto-check racing a manual click.
         self._busy = False
 
     # ------------------------------------------------------------------
@@ -483,11 +372,7 @@ class UpdateManager:
             self._busy = False
 
     def install_and_quit(self) -> bool:
-        """Hands off to the extracted installer. Returns True if the caller
-        should now quit the app -- the caller is expected to immediately
-        follow a True return with `hi.get_runner_params().app_shall_exit =
-        True` so normal before_exit teardown still runs. Returns False
-        (recording an error) if the handoff itself fails."""
+        """Hands off to the installer; returns True if the caller should now quit the app, False (with error recorded) if the handoff failed."""
         with self._lock:
             path = self._installer_path
         if path is None:
@@ -508,8 +393,7 @@ class UpdateManager:
         return True
 
     def dismiss_auto_prompt(self) -> None:
-        """'Later' on the automatic check-on-launch prompt -- a session-only
-        skip; never touches SettingsState.check_for_updates_on_launch."""
+        """Later on the automatic check-on-launch prompt -- session-only, doesn't touch the setting."""
         with self._lock:
             self._auto_prompt_pending = False
 
@@ -518,11 +402,7 @@ class UpdateManager:
     # ------------------------------------------------------------------
 
     def sync_to(self, settings: "SettingsState") -> None:
-        """Call once per Companion-window frame, before render. Opposite
-        direction from remapper_engine.update_snapshot() (copies the
-        engine's result out into AppState instead of in) but the same
-        lock-guarded-snapshot pattern. Never mutate AppState.settings'
-        update_* fields from anywhere else."""
+        """Call once per Companion-window frame, before render, to copy status into AppState."""
         with self._lock:
             settings.update_status = self._status
             settings.update_latest_version = self._latest_version
@@ -532,6 +412,5 @@ class UpdateManager:
             settings.auto_update_prompt_pending = self._auto_prompt_pending
 
 
-# Process-wide singleton -- main.py drives this alongside the Companion
-# window's lifecycle, same pattern as remapper_engine/macro_engine/hud_overlay.
+# Process-wide singleton -- main.py drives this alongside the Companion window's lifecycle.
 update_manager = UpdateManager()

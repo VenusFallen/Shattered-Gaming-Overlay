@@ -1,17 +1,7 @@
-"""tests/test_profiles_auto_switch.py -- unit coverage for
-profiles.check_auto_switch(), the focus-driven profile auto-switch entry
-point (see profiles.py's module docstring).
-
-Deliberately does not go through apply_profile()'s real load/persist/disk-
-write path -- that's already exercised by manual/live profile Load testing,
-and letting it run here would touch the real profiles.json under
-%LOCALAPPDATA%. window_select.cached_foreground_pid() and
-psutil.Process().name() are stubbed so none of this depends on real OS
-process/focus state.
-
-_auto_switch_last_pid is module-level state in profiles.py (see that
-module's own comment on it) -- the autouse fixture below resets it before
-and after every test so runs can't leak pid state into each other.
+"""Unit coverage for profiles.check_auto_switch(), the focus-driven profile auto-switch entry point.
+Deliberately does not go through apply_profile()'s real load/persist/disk-write path -- window_select.
+cached_foreground_pid() and psutil.Process().name() are stubbed instead. The autouse fixture resets
+profiles._auto_switch_last_pid (module-level state) before/after every test so runs can't leak pid state.
 """
 
 from __future__ import annotations

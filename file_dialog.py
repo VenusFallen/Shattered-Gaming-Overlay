@@ -1,13 +1,7 @@
 """file_dialog.py -- native Windows Open/Save file dialogs via raw ctypes
-bindings to comdlg32.dll's classic common-dialog API (GetOpenFileNameW /
-GetSaveFileNameW). Matches this project's established convention for OS
-integration (see tray_icon.py, titlebar.py, window_select.py) -- no GUI
-toolkit dependency, and deliberately not the heavier IFileDialog COM
-interface.
-
-These calls are blocking/modal by nature. That's fine here: both are only
-ever triggered by a deliberate button click (Profiles panel's Export/Import),
-never from the per-frame render loop.
+bindings to comdlg32.dll's classic common-dialog API. Blocking/modal by
+nature, which is fine here since both are only ever triggered by a
+deliberate button click, never from the per-frame render loop.
 """
 
 from __future__ import annotations
@@ -35,6 +29,8 @@ _OFN_NOCHANGEDIR = 0x00000008  # dialog navigation shouldn't change the process'
 _PATH_BUF_LEN = 32768  # long-path-aware; well beyond legacy 260-char MAX_PATH
 
 _JSON_FILTER = "JSON Files\0*.json\0All Files\0*.*\0\0"
+# Public (no leading underscore) -- passed explicitly as show_open_dialog()'s filter_spec, e.g. Soundboard's Add Sound button.
+AUDIO_FILTER = "Audio Files\0*.wav;*.mp3;*.ogg;*.flac\0All Files\0*.*\0\0"
 
 
 class _OPENFILENAMEW(ctypes.Structure):
@@ -100,17 +96,19 @@ def show_save_dialog(default_filename: str = "", title: str = "Export Profile") 
     return buf.value or None
 
 
-def show_open_dialog(title: str = "Import Profile") -> Optional[str]:
-    """Blocking native Open File dialog, JSON-filtered. Returns the chosen
-    path, or None if the user cancelled."""
+def show_open_dialog(title: str = "Import Profile", filter_spec: str = _JSON_FILTER, def_ext: str = "json") -> Optional[str]:
+    """Blocking native Open File dialog. JSON-filtered by default (the
+    Profiles panel's Import use case); pass `filter_spec=AUDIO_FILTER,
+    def_ext=""` (the Soundboard panel's Add Sound use case) for anything
+    else. Returns the chosen path, or None if the user cancelled."""
     buf = ctypes.create_unicode_buffer(_PATH_BUF_LEN)
     ofn = _OPENFILENAMEW()
     ofn.lStructSize = ctypes.sizeof(_OPENFILENAMEW)
     ofn.hwndOwner = _owner_hwnd()
-    ofn.lpstrFilter = _JSON_FILTER
+    ofn.lpstrFilter = filter_spec
     ofn.lpstrFile = ctypes.cast(buf, wintypes.LPWSTR)
     ofn.nMaxFile = _PATH_BUF_LEN
-    ofn.lpstrDefExt = "json"
+    ofn.lpstrDefExt = def_ext
     ofn.lpstrTitle = title
     ofn.Flags = _OFN_EXPLORER | _OFN_PATHMUSTEXIST | _OFN_FILEMUSTEXIST | _OFN_NOCHANGEDIR
 

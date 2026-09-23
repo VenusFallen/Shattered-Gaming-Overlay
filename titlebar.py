@@ -1,18 +1,8 @@
 """titlebar.py -- themed custom title bar for the borderless Companion window.
-
-main.py runs with `app_window_params.borderless = True`, which drops the OS
-title bar (drag region + min/max/close). This module rebuilds a themed
-replacement strip that shell.py renders at the top of every frame.
-
-`borderless_movable`/`_resizable`/`_closable` are all left False: Hello
-ImGui's generic drag/resize zones are unstyled, have no min/max affordance,
-and (resize specifically) had a real bug -- see `render_resize_grip()`'s
-docstring. Drag and resize are both hand-rolled instead via the Win32
-"release capture, send WM_NCLBUTTONDOWN/HT*" trick, and close/min/max are
-themed buttons instead of Hello ImGui's generic ones.
-
-imgui_bundle has no minimize/maximize/close call of its own; those go
-through raw Win32 `ShowWindow` via ctypes (same pattern as input_hooks.py).
+main.py runs with `app_window_params.borderless = True`, dropping the OS
+title bar; this module rebuilds a themed replacement, with drag/resize/
+minimize/maximize/close hand-rolled via raw Win32 calls instead of Hello
+ImGui's own borderless zones (see `render_resize_grip()` for why).
 """
 
 from __future__ import annotations
@@ -112,9 +102,7 @@ def _start_native_resize() -> None:
 
 
 def _bar_button(theme, str_id: str, icon: str, hover_color, size: float) -> bool:
-    """One title-bar glyph button: transparent until hovered, then a themed
-    fill (danger-red for Close, neutral for the rest) plus the icon, so
-    hover state is never carried by color alone."""
+    # Transparent until hovered, then a themed fill (danger-red for Close) plus the icon -- never color alone.
     imgui.push_id(str_id)
     imgui.push_style_color(imgui.Col_.button, (0.0, 0.0, 0.0, 0.0))
     imgui.push_style_color(imgui.Col_.button_hovered, hover_color)
@@ -147,10 +135,7 @@ def render(ctx: PanelContext) -> None:
     # icon/name drawn on top via the draw list (non-interactive, so it can
     # never steal the drag region's hover/click). ---
     imgui.invisible_button("##titlebar-drag", imgui.ImVec2(drag_w, bar_h))
-    # No double-click-to-maximize: the first mouse-down already fires
-    # _start_native_drag into a blocking Win32 move-loop, so a second click
-    # never arrives as a distinguishable double-click. Fixing that needs a
-    # real WM_NCHITTEST subclass, out of scope here.
+    # No double-click-to-maximize: mouse-down already fires a blocking native move-loop, so a second click never arrives.
     if imgui.is_item_activated():
         _start_native_drag()
 
@@ -183,27 +168,10 @@ def render(ctx: PanelContext) -> None:
 
 
 def render_resize_grip(ctx: PanelContext) -> None:
-    """Bottom-right resize handle, hand-rolled the same native-Win32 way
-    the title bar drag above is (`WM_NCLBUTTONDOWN`/`HT*`, handing the
-    whole drag off to Windows' own move-loop) instead of using Hello
-    ImGui's built-in `borderless_resizable` corner (left False in main.py).
-
-    That built-in implementation tracks its own manual drag state at the
-    ImGui level rather than handing off to the OS -- per its own docs, "a
-    drag zone is displayed at the bottom-right... when the mouse is over
-    it" -- and has a real, reproducible bug: clicking the corner could
-    start the window continuously following the cursor even after the
-    mouse button was released, needing a second click to stop it. Found
-    live 2026-09-17. The native WM_NCLBUTTONDOWN approach can't have this
-    class of bug -- once sent, Windows' own move-loop owns the drag
-    entirely until the OS itself sees the button released, the same
-    guarantee `_start_native_drag()` already relies on for the title bar.
-
-    Drawn every frame regardless of active panel (call this once from
-    shell.py's render_frame, same as titlebar.render()), positioned via the
-    main viewport's absolute screen rect so it sits in the true corner
-    regardless of which panel/child region is currently under it. Skipped
-    while maximized -- nothing to resize."""
+    # Bottom-right resize handle, hand-rolled via WM_NCLBUTTONDOWN/HT* (same as the title bar drag) instead of
+    # Hello ImGui's built-in borderless_resizable corner, which tracks drag state manually at the ImGui level and
+    # has a reproducible bug: the window can keep following the cursor after mouse-up, needing a second click to
+    # stop. Call once per frame regardless of active panel; skipped while maximized.
     if _is_maximized():
         return
 
@@ -222,10 +190,7 @@ def render_resize_grip(ctx: PanelContext) -> None:
         _start_native_resize()
     imgui.pop_id()
 
-    # Minimal visual affordance -- three short diagonal lines, the same
-    # corner-resize-grip convention most desktop apps use, drawn on top of
-    # the invisible button so it stays discoverable without a hover-only
-    # reveal (unlike Hello ImGui's own version, which only appears on hover).
+    # Three diagonal lines, the usual corner-resize-grip convention -- always visible, not hover-only like Hello ImGui's own.
     draw_list = imgui.get_window_draw_list()
     color = imgui.get_color_u32(theme.accent_text if hovered else theme.border_strong)
     pad = 3.0

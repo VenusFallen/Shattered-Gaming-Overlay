@@ -1,17 +1,9 @@
 """main.py -- entry point for the Companion window (Dear ImGui via
-imgui_bundle's Hello ImGui).
-
-Borderless with a hand-rolled titlebar (see titlebar.py) instead of relying
-on Hello ImGui's own borderless drag/resize/close fields. Renders on OpenGL3,
-not DX11 -- the published imgui_bundle wheel only compiles in
-HELLOIMGUI_HAS_OPENGL3; DX11 would need building imgui_bundle from source.
-Doesn't affect the HUD overlay, which drives its own DirectComposition swap
-chain directly via ctypes regardless of this window's backend.
-
-Also owns the lifecycle of the HUD overlay's background thread
-(hud_overlay.py, a separate click-through window, not rendered as part of
-this window's own frame) and the system tray icon (tray_icon.py) -- Close
-hides to tray; the tray's own Quit is the real exit.
+imgui_bundle's Hello ImGui). Renders on OpenGL3, not DX11 -- the published
+imgui_bundle wheel only compiles in HELLOIMGUI_HAS_OPENGL3; doesn't affect
+the HUD overlay, which drives its own DirectComposition swap chain via
+ctypes regardless. Also owns the lifecycle of the HUD overlay's background
+thread (hud_overlay.py) and the system tray icon (tray_icon.py).
 """
 
 from __future__ import annotations
@@ -24,9 +16,11 @@ from imgui_bundle import hello_imgui as hi
 from imgui_bundle import imgui
 from imgui_bundle import immapp
 
+import input_inject
 import profiles as profiles_engine
 import settings_store
 import shell
+import soundboard_store
 import theme as theme_module
 import tray_icon as tray_icon_module
 import updater
@@ -37,6 +31,7 @@ from key_capture import capture_service
 from macro_engine import macro_engine
 from macro_recorder import macro_recorder
 from remapper import remapper_engine
+from soundboard_engine import soundboard_engine
 from stats_poller import StatsPoller
 from version import VERSION, WINDOW_TITLE
 
@@ -74,6 +69,8 @@ def _post_init(app_state: AppState) -> None:
     io = imgui.get_io()
     io.config_flags |= imgui.ConfigFlags_.nav_enable_keyboard
     _set_window_icon()
+    # Windows' default ~15.6ms timer tick would otherwise round up macro_engine.py's short per-substep waits.
+    input_inject.raise_timer_resolution()
     # HUD overlay: starts idle, runs for the app's whole lifetime;
     # update_crosshair() in _show_gui() below turns elements on/off live.
     hud_overlay.start()
@@ -87,17 +84,16 @@ def _post_init(app_state: AppState) -> None:
     # Must be up before the user can click Close -- titlebar.py checks
     # tray_icon.is_running() to decide hide-to-tray vs. real exit.
     tray_icon_module.tray_icon.start()
-    # Hooks stay installed for the app's lifetime; only match/inject is
-    # focus-gated. macro_engine subscribes to the post-remap event stream
-    # instead of its own hook -- wire it before either starts. Also needs the
-    # gate-close signal directly (not just the event stream) -- see
-    # remapper.py's add_gate_close_listener() docstring: a live Hold/Toggle
-    # macro session has no other way to learn its trigger was released while
-    # the targeted process was unfocused.
+    # macro_engine subscribes to the post-remap event stream instead of its own hook -- wire it before either starts.
+    # Also needs the gate-close signal directly, since a live Hold/Toggle session has no other way to learn its
+    # trigger was released while the targeted process was unfocused.
     remapper_engine.add_effective_listener(macro_engine.handle_effective_event)
     remapper_engine.add_gate_close_listener(macro_engine.handle_gate_closed)
+    # Soundboard clips arm off the same stream -- no gate-close listener needed, a one-shot trigger has no session to clean up.
+    remapper_engine.add_effective_listener(soundboard_engine.handle_effective_event)
     remapper_engine.start()
     macro_engine.start()
+    soundboard_engine.start()
     # Fire-and-forget -- start_check() spawns its own thread and returns
     # immediately; the result surfaces via sync_to() each frame.
     if app_state.settings.check_for_updates_on_launch:
@@ -106,16 +102,20 @@ def _post_init(app_state: AppState) -> None:
 
 def _before_exit(app_state: AppState) -> None:
     # Belt-and-suspenders -- panels/settings.py already saves on every
-    # change; this catches anything that somehow didn't.
+    # change; this catches anything that somehow didn't. Same reasoning
+    # extends to soundboard_store below.
     settings_store.save(app_state)
+    soundboard_store.save(app_state)
     capture_service.shutdown()
     macro_recorder.shutdown()  # separate HookManager from capture_service's
     hud_overlay.stop()
     stats_poller.stop()
     macro_engine.stop()  # joins in-flight playback threads
+    soundboard_engine.stop()  # aborts any clip still playing -- see its own stop() docstring
     remapper_engine.stop()
     window_select.stop_focus_tracking()
     tray_icon_module.tray_icon.stop()
+    input_inject.restore_timer_resolution()
 
 
 def main() -> None:
@@ -124,6 +124,7 @@ def main() -> None:
     # app-wide preferences like theme or close-behavior.
     settings_store.load(app_state)
     profiles_engine.load_all(app_state)
+    soundboard_store.load(app_state)
 
     runner_params = hi.RunnerParams()
 
@@ -137,16 +138,8 @@ def main() -> None:
     runner_params.app_window_params.restore_previous_geometry = True
     runner_params.app_window_params.resizable = True
     runner_params.app_window_params.borderless = True
-    # Drag AND resize are both hand-rolled in titlebar.py (native Win32
-    # WM_NCLBUTTONDOWN move-loop) instead of using Hello ImGui's own
-    # borderless drag/resize zones; close gets a themed button instead of
-    # Hello ImGui's generic one. borderless_resizable was left True here
-    # until a real bug was found live 2026-09-17: Hello ImGui's own corner-
-    # resize implementation tracks its drag state manually at the ImGui
-    # level rather than handing off to the OS's native resize loop, and
-    # could start the window continuously following the cursor after a
-    # single click even with the mouse button no longer held, needing a
-    # second click to stop. See titlebar.py's render_resize_grip().
+    # Drag/resize/close are all hand-rolled in titlebar.py instead of Hello ImGui's own borderless zones --
+    # its corner-resize had a real stuck-drag bug on click-release, see render_resize_grip().
     runner_params.app_window_params.borderless_movable = False
     runner_params.app_window_params.borderless_resizable = False
     runner_params.app_window_params.borderless_closable = False
@@ -197,7 +190,8 @@ def main() -> None:
         macro_enabled_count = sum(1 for m in app_state.macros.macros if m.enabled)
         hud_overlay.update_indicators(app_state.overlay.status_indicators, remap_enabled_count, macro_enabled_count)
         remapper_engine.update_snapshot(app_state.remapper, app_state.window_select)
-        macro_engine.update_snapshot(app_state.macros)
+        macro_engine.update_snapshot(app_state.macros, app_state.settings)
+        soundboard_engine.update_snapshot(app_state.soundboard)
 
     runner_params.callbacks.post_init = lambda: _post_init(app_state)
     runner_params.callbacks.before_exit = lambda: _before_exit(app_state)
@@ -206,20 +200,8 @@ def main() -> None:
     try:
         immapp.run(runner_params)
     except KeyboardInterrupt:
-        # Ctrl+C, or closing the terminal window directly when running from
-        # source -- Windows delivers that to the console process as a signal
-        # Python turns into KeyboardInterrupt, which aborts immapp.run()'s
-        # native render loop mid-frame and never reaches Hello ImGui's own
-        # graceful shutdown, so callbacks.before_exit above never fires.
-        # _before_exit() isn't just settings persistence -- it's also where
-        # remapper_engine.stop() lives, the stuck-key release path (see
-        # remapper.py's module docstring). Skipping it here would leave a
-        # latched Toggle or held Hold remap's injected key stuck at the OS
-        # level even after this process is gone -- SendInput key state
-        # outlives the process that injected it. Run it explicitly instead of
-        # letting the interrupt just unwind past it. Hello ImGui's own
-        # before_exit only fires through its normal shutdown path, so this
-        # can't double-call it -- a clean exit never raises here at all.
+        # Ctrl+C aborts immapp.run()'s native loop mid-frame, so Hello ImGui's before_exit callback never fires --
+        # call it explicitly, since remapper_engine.stop() lives there and injected keys outlive this process otherwise.
         _before_exit(app_state)
 
 

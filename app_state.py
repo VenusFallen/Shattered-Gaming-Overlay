@@ -1,10 +1,5 @@
-"""app_state.py -- in-memory state shape for the Companion window.
-
-Pure data, no I/O. Panels read/write these dataclasses directly; the engine
-modules (remapper.py, macro_engine.py, profiles.py, window_select.py,
-stats_poller.py, settings_store.py) own the actual hardware/disk/network
-side and sync into or out of this shape once per frame.
-"""
+"""In-memory state shape for the Companion window. Pure data, no I/O --
+engine modules sync into/out of this shape once per frame."""
 
 from __future__ import annotations
 
@@ -18,11 +13,7 @@ from theme import hex_rgba
 
 
 def _next_id(prefix: str) -> str:
-    # uuid4, not a process-lifetime counter -- a counter restarts at 1 every
-    # launch, so ids collide across sessions (real bug: two profiles both
-    # landing on "profile-1" after separate app runs caused duplicate-id
-    # corruption in profiles.json). Truncated to 8 hex chars: collision odds
-    # are irrelevant at this app's scale, and it keeps profiles.json readable.
+    # uuid4, not a counter -- a counter restarts at 1 every launch and collides across sessions.
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
@@ -38,29 +29,20 @@ class RemapMode(Enum):
 
 @dataclass
 class RemapEntry:
-    """A plain 1:1 remap: destination mirrors source down/up, always, at
-    whatever frequency the source is pressed. No mode concept -- Hold/Toggle
-    used to live here (RemapEntry.mode) but that's been relocated to
-    AutoToggleHoldEntry below, since a self-acting toggle/hold key never
-    needed the source/destination pair to begin with."""
+    """A plain 1:1 remap: destination mirrors source down/up."""
 
     id: str
     source: KeyBind = field(default_factory=lambda: UNBOUND)
     destination: KeyBind = field(default_factory=lambda: UNBOUND)
     enabled: bool = True
-    # Cosmetic only -- never read by matching/injection. Blank falls back to
-    # showing the bound keys, same as before this field existed.
-    name: str = ""
+    name: str = ""  # cosmetic only, never read by matching/injection
 
 
 @dataclass
 class AutoToggleHoldEntry:
-    """One key acting on itself: Toggle latches it down on the first
-    physical press and releases it on the next (source release is a no-op).
-    Hold taps it (down, 100ms, up) on BOTH the physical press and release
-    edges, turning a game's toggle-only action into hold-to-use from the
-    player's side. See remapper.py for the actual state machines -- this is
-    pure UI/persisted config, same split as RemapEntry above."""
+    """One key acting on itself: Toggle latches it down on the first press
+    and releases on the next; Hold taps it on both press and release edges.
+    See remapper.py for the actual state machines."""
 
     id: str
     name: str = ""
@@ -76,11 +58,7 @@ class RemapperState:
     # which entry/field is currently mid-capture ("source" | "destination"), else None
     capturing_entry_id: Optional[str] = None
     capturing_field: Optional[str] = None
-    # which Auto Toggle/Hold entry (if any) is currently mid-capture for its
-    # single "key" field -- separate from capturing_entry_id/capturing_field
-    # above so starting a capture in one section doesn't get misread as a
-    # capture belonging to the other.
-    capturing_auto_id: Optional[str] = None
+    capturing_auto_id: Optional[str] = None  # Auto Toggle/Hold entry mid-capture, if any
 
     def add_entry(self) -> RemapEntry:
         entry = RemapEntry(id=_next_id("remap"))
@@ -124,6 +102,8 @@ class MacroStepKind(Enum):
     MOUSE_CLICK = "Mouse Click"
     SCROLL = "Scroll"
     DELAY = "Delay"
+    MOUSE_MOVE_TO = "Move Mouse To"  # absolute jump to a recorded point
+    MOUSE_MOVE_BY = "Move Mouse By"  # fixed relative (dx, dy) nudge; unrestricted mode-wise, see macro_engine.py
 
 
 @dataclass
@@ -134,6 +114,15 @@ class MacroStep:
     mouse_button: str = "Left"
     scroll_delta: int = 120
     delay_ms: int = 50
+    # MOUSE_MOVE_TO: absolute virtual-desktop target coordinate.
+    # MOUSE_MOVE_BY: fixed relative (dx, dy) nudge. Unused by every other kind.
+    move_x: int = 0
+    move_y: int = 0
+    # MOUSE_MOVE_BY only: path wobble 0-100, independent of MacroDef.humanize_jitter_pct (distance). 0 = straight line.
+    path_wobble_pct: int = 0
+    # MOUSE_MOVE_TO only: 0-100, how fast the cursor glides to the target (see macro_engine.py's glide speed range).
+    # Move To always glides in small steps timed at SettingsState.mouse_polling_rate_hz -- never an instant teleport.
+    move_speed_pct: int = 50
 
 
 @dataclass
@@ -141,10 +130,14 @@ class MacroDef:
     id: str
     name: str = "New Macro"
     trigger: KeyBind = field(default_factory=lambda: UNBOUND)
+    trigger_modifiers: List[KeyBind] = field(default_factory=list)  # extra keys that must be held for trigger to fire, e.g. Shift+R
     mode: MacroMode = MacroMode.ONCE
     enabled: bool = True
     humanize_jitter_pct: int = 15
     steps: List[MacroStep] = field(default_factory=list)
+
+    def has_move_by_step(self) -> bool:
+        return any(s.kind == MacroStepKind.MOUSE_MOVE_BY for s in self.steps)
 
     def add_step(self) -> MacroStep:
         step = MacroStep(id=_next_id("step"))
@@ -158,6 +151,7 @@ class MacrosState:
     selected_id: Optional[str] = None
     capturing_macro_id: Optional[str] = None  # trigger-bind capture in progress, if any
     capturing_step_id: Optional[str] = None  # per-step key-bind capture in progress, if any
+    capturing_move_step_id: Optional[str] = None  # per-step Move-To position capture in progress, if any
     recording_macro_id: Optional[str] = None  # macro_recorder session in progress, if any
 
     def add_macro(self) -> MacroDef:
@@ -180,6 +174,49 @@ class MacrosState:
 
 
 # ---------------------------------------------------------------------------
+# Soundboard
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SoundClip:
+    """One importable audio file bound to a hotkey. file_path is recorded
+    as given, not copied into app-owned storage."""
+
+    id: str
+    name: str = "New Sound"
+    file_path: str = ""
+    hotkey: KeyBind = field(default_factory=lambda: UNBOUND)
+    volume: float = 1.0  # 0.0-1.0, this clip's own gain
+    enabled: bool = True
+
+
+@dataclass
+class SoundboardState:
+    clips: List[SoundClip] = field(default_factory=list)
+    output_device_name: str = ""
+    selected_clip_id: Optional[str] = None
+    capturing_clip_id: Optional[str] = None  # per-clip hotkey capture in progress, if any
+    device_filter_text: str = ""  # scratch filter text for the output device picker
+
+    def add_clip(self) -> SoundClip:
+        clip = SoundClip(id=_next_id("sound"))
+        self.clips.append(clip)
+        self.selected_clip_id = clip.id
+        return clip
+
+    def remove_clip(self, clip_id: str) -> None:
+        self.clips = [c for c in self.clips if c.id != clip_id]
+        if self.selected_clip_id == clip_id:
+            self.selected_clip_id = self.clips[0].id if self.clips else None
+        if self.capturing_clip_id == clip_id:
+            self.capturing_clip_id = None
+
+    def find(self, clip_id: Optional[str]) -> Optional[SoundClip]:
+        return next((c for c in self.clips if c.id == clip_id), None)
+
+
+# ---------------------------------------------------------------------------
 # Profiles
 # ---------------------------------------------------------------------------
 
@@ -189,15 +226,11 @@ class ProfileDef:
     id: str
     name: str
     protected: bool = False  # the "Default" profile -- cannot be deleted/renamed
-    # Per-module "survive profile load" flags. profiles.py owns the real
-    # payload; this is the editable mirror.
+    # Per-module "survive profile load" flags; profiles.py owns the real payload.
     persist_remapper: bool = False
     persist_macros: bool = False
     persist_window_select: bool = False
-    # Exe name (e.g. "eft.exe") this profile auto-loads for -- see
-    # profiles.check_auto_switch(). Blank (the default, and every profile
-    # saved before this field existed) never participates in auto-switch.
-    target_executable: str = ""
+    target_executable: str = ""  # exe name this profile auto-loads for, see profiles.check_auto_switch()
 
 
 @dataclass
@@ -205,14 +238,8 @@ class ProfilesState:
     profiles: List[ProfileDef] = field(default_factory=list)
     active_id: str = ""
     new_profile_draft: str = ""  # scratch buffer for the "create profile" name field
-    # Scratch filter text for the auto-switch target-executable picker
-    # (panels/profiles.py). One shared field, not per-profile, is enough --
-    # only one profile's picker popup can be open at a time.
-    auto_switch_filter_text: str = ""
-    # Momentary "Saved!" indicator next to a profile's name after clicking
-    # its Save button -- which profile, and until what monotonic timestamp
-    # panels/profiles.py should keep showing it. One shared pair, not
-    # per-profile, since only one Save click can be the most recent.
+    auto_switch_filter_text: str = ""  # scratch filter text for the auto-switch target-executable picker
+    # Momentary "Saved!" indicator: which profile and until what monotonic timestamp to show it.
     save_flash_id: Optional[str] = None
     save_flash_until: float = 0.0
 
@@ -255,18 +282,14 @@ class ProcessInfo:
 
 @dataclass
 class WindowSelectState:
-    # blank/unset selection == global, unrestricted
-    selected: Optional[ProcessInfo] = None
+    selected: Optional[ProcessInfo] = None  # None == global, unrestricted
     available: List[ProcessInfo] = field(default_factory=list)
     filter_text: str = ""
-    # Whether `selected` currently holds real OS foreground focus -- kept
-    # live by window_select.py.
-    selected_has_focus: bool = False
+    selected_has_focus: bool = False  # kept live by window_select.py
 
 
 # ---------------------------------------------------------------------------
-# Overlay -- config the HUD overlay (hud_overlay.py) reads each frame to
-# decide what to render.
+# Overlay -- config the HUD overlay (hud_overlay.py) reads each frame
 # ---------------------------------------------------------------------------
 
 
@@ -277,14 +300,11 @@ class StatsHudState:
     show_gpu: bool = True
     show_ram: bool = True
     show_fps: bool = True
-    # Sparkline only -- the 1%/0.1% Low text line stays under show_fps.
-    show_fps_graph: bool = True
+    show_fps_graph: bool = True  # sparkline only -- the 1%/0.1% Low text line stays under show_fps
     corner: str = "Top Right"
     scale: float = 1.0
     color: Tuple[float, float, float, float] = (0.93, 0.94, 0.96, 1.0)
-    # Card background transparency, independent of `color` (text only).
-    # 0 = see-through, 1 = opaque.
-    bg_alpha: float = 0.55
+    bg_alpha: float = 0.55  # card background transparency, independent of color (text only)
 
 
 @dataclass
@@ -293,19 +313,13 @@ class CrosshairState:
     style: str = "Cross"
     size: float = 12.0
     thickness: float = 2.0
-    # Cross/T-Shape: gap between center and each arm (0 = arms touch,
-    # forming an unbroken plus/T). Circle + Dot: offset added to the ring's
-    # radius, independent of the dot's size or the ring's thickness. Unused
-    # by Dot and plain Circle.
-    gap: float = 3.0
+    gap: float = 3.0  # Cross/T-Shape: gap between center and arm. Circle+Dot: ring radius offset. Unused by Dot/Circle.
     color: Tuple[float, float, float, float] = (0.24, 0.86, 0.52, 1.0)
 
 
 @dataclass
 class StatusIndicatorsState:
-    """Two themed count badges (Remapper, Macros), each showing how many of
-    that module's entries are currently *enabled* -- not the total
-    configured count."""
+    """Two themed count badges (Remapper, Macros), showing how many entries are currently enabled."""
 
     enabled: bool = False
     show_remap_badge: bool = True
@@ -327,8 +341,7 @@ class OverlayState:
 
 
 class UpdateStatus(Enum):
-    """Synced from updater.UpdateManager.sync_to() each frame -- never set
-    directly from a background thread."""
+    """Synced from updater.UpdateManager.sync_to() each frame."""
 
     IDLE = "idle"
     CHECKING = "checking"
@@ -344,30 +357,21 @@ class UpdateStatus(Enum):
 class SettingsState:
     theme_name: str = "dark"
     reduce_motion: bool = False
-    # Color Cycle config -- only meaningful while theme_name == "color_cycle".
-    # See theme.py's resolve_color_cycle_theme().
+    # Color Cycle config, only meaningful while theme_name == "color_cycle". See theme.py's resolve_color_cycle_theme().
     cycle_color_a: Tuple[float, float, float, float] = field(default_factory=lambda: hex_rgba("#3D6FD1"))
     cycle_color_b: Tuple[float, float, float, float] = field(default_factory=lambda: hex_rgba("#7C5CE0"))
     cycle_period_sec: float = 20.0  # full back-and-forth cycle, seconds
-    # Advanced each frame by shell.py, frozen while reduce_motion is on.
-    cycle_elapsed_sec: float = 0.0
+    cycle_elapsed_sec: float = 0.0  # advanced each frame by shell.py, frozen while reduce_motion is on
     check_for_updates_on_launch: bool = True
-    # False: X button exits outright instead of hiding to tray. See
-    # titlebar.py's _close().
-    close_minimizes_to_tray: bool = True
-    # Off by default -- silently swapping the whole Remapper/Macros config on
-    # a focus change should be opt-in, not a surprise. See
-    # profiles.check_auto_switch().
-    auto_switch_profiles: bool = False
+    close_minimizes_to_tray: bool = True  # False: X button exits outright, see titlebar.py's _close()
+    auto_switch_profiles: bool = False  # off by default -- swapping config on focus change is opt-in
+    mouse_polling_rate_hz: int = 1000  # used by Macro's Move To/Move By stepping; matches the physical mouse's own polling rate
     last_checked_display: str = "Never checked"
     update_status: UpdateStatus = UpdateStatus.IDLE
     update_latest_version: str = ""
     update_download_pct: int = 0
     update_error_message: str = ""
-    # True for one automatic check-on-launch result per session, until the
-    # user picks Update Now/Later. "Later" only clears this, never touches
-    # check_for_updates_on_launch.
-    auto_update_prompt_pending: bool = False
+    auto_update_prompt_pending: bool = False  # one automatic check-on-launch prompt per session, until Update Now/Later
 
 
 # ---------------------------------------------------------------------------
@@ -379,6 +383,7 @@ PANELS: Tuple[str, ...] = (
     "overlay",
     "macros",
     "remapper",
+    "soundboard",
     "profiles",
     "settings",
     "about",
@@ -389,18 +394,14 @@ PANELS: Tuple[str, ...] = (
 class AppState:
     remapper: RemapperState = field(default_factory=RemapperState)
     macros: MacrosState = field(default_factory=MacrosState)
+    soundboard: SoundboardState = field(default_factory=SoundboardState)
     profiles: ProfilesState = field(default_factory=default_profiles_state)
     window_select: WindowSelectState = field(default_factory=WindowSelectState)
     overlay: OverlayState = field(default_factory=OverlayState)
     settings: SettingsState = field(default_factory=SettingsState)
     active_panel: str = "dashboard"
-    # Runtime-only, never persisted. Why PresentMon's FPS tracking last
-    # failed, if it did -- synced from stats_poller each frame, surfaced by
-    # panels/overlay.py's Stats HUD card.
-    stats_fps_error: Optional[str] = None
+    stats_fps_error: Optional[str] = None  # runtime-only, why PresentMon last failed, synced from stats_poller
 
 
 def new_app_state() -> AppState:
-    """Build a blank AppState. main.py loads settings_store/profiles data
-    into it right after construction."""
     return AppState()

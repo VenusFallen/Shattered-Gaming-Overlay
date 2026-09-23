@@ -1,36 +1,7 @@
-"""profiles.py -- save/load/delete named profiles to profiles.json under
-%LOCALAPPDATA% (see PROFILES_FILE's own comment for why not repo/exe-relative).
+"""Save/load/delete named profiles to profiles.json under %LOCALAPPDATA%.
 Each profile snapshots Remapper entries, Macros, Window Select target, and
-Overlay config.
-
-Safety pattern (Remapper/Macros/Window Select only): on `apply_profile()`,
-every Remapper entry's `enabled` is forced False unless `persist_remapper`
-is set, every Macro's `enabled` forced False unless `persist_macros` is set,
-and the saved Window Select target drops back to Global unless
-`persist_window_select` is set. This is the only place that pattern is
-applied -- both startup `load_all()` and the panel's Load button go through
-this same `apply_profile()` call. Overlay config is NOT subject to this --
-it always restores fully, since it's passive/non-injecting with no
-equivalent safety concern.
-
-`AppState.profiles.profiles` (`ProfileDef` list) carries per-profile
-metadata only (id/name/protected/persist_* flags). The actual payload for
-every profile lives here, in a module-level cache keyed by profile id, and
-is what serializes to/from profiles.json. `AppState.remapper` / `.macros` /
-`.window_select` / `.overlay` hold only the currently active profile's live
-state -- `save_profile()` snapshots that back into a profile's payload.
-
-`check_auto_switch()` is a separate, opt-in mechanism (`settings.
-auto_switch_profiles`): it reacts to whichever process currently holds real
-OS foreground focus -- ANY process, not `AppState.window_select.selected` --
-against each profile's own `target_executable`. Deliberately independent of
-the single-selected-window gate that remapper.py/macro_engine.py read off
-`WindowSelectState`: that gate only exists once a user has explicitly picked
-one process to restrict Remapper/Macros to, whereas this reacts to whatever
-game currently has focus, matched per-profile. It only writes
-`AppState.window_select.selected` indirectly, the same way a manual Load
-already does (via `persist_window_select`), so it never fights that gate.
-"""
+Overlay config. ProfileDef carries per-profile metadata only -- the actual
+payload lives in this module's _payload_cache, keyed by profile id."""
 
 from __future__ import annotations
 
@@ -64,22 +35,12 @@ from app_state import (
 )
 from key_capture import KeyBind, UNBOUND
 
-# NOT Path(__file__).resolve().parent -- in a frozen PyInstaller onefile
-# build that resolves to the ephemeral per-launch extraction temp dir
-# (sys._MEIPASS), which is deleted on exit, so profiles would never persist.
-# Mirrors updater.py's _log_dir(), which uses this same %LOCALAPPDATA% location.
+# Not Path(__file__)-relative -- a frozen PyInstaller build resolves that to the ephemeral extraction temp dir, deleted on exit.
 PROFILES_FILE = Path(os.getenv("LOCALAPPDATA") or tempfile.gettempdir()) / "Shattered Gaming Overlay" / "profiles.json"
 DEFAULT_NAME = "Default"
 
 def _fallback_id(prefix: str) -> str:
-    # NOT just a backfill for a missing/corrupt id read from disk -- this is
-    # also the primary id source for brand-new profiles, via
-    # create_profile_from_current() and import_profile() below. Used to be a
-    # process-lifetime counter restarting at 1 every launch, which meant the
-    # first profile created in any two separate app sessions collided on the
-    # same id ("profile-restored-1") -- that's what caused the duplicate-
-    # active-profile / delete-removes-both-profiles bug. uuid4 can't repeat
-    # across restarts; truncated to 8 hex chars to keep profiles.json readable.
+    # uuid4, not a counter -- a counter restarts at 1 every launch and collides across sessions.
     return f"{prefix}-restored-{uuid.uuid4().hex[:8]}"
 
 
@@ -167,6 +128,10 @@ def _step_to_json(s: MacroStep) -> dict:
         "mouse_button": s.mouse_button,
         "scroll_delta": s.scroll_delta,
         "delay_ms": s.delay_ms,
+        "move_x": s.move_x,
+        "move_y": s.move_y,
+        "path_wobble_pct": s.path_wobble_pct,
+        "move_speed_pct": s.move_speed_pct,
     }
 
 
@@ -185,6 +150,10 @@ def _step_from_json(d: dict) -> MacroStep:
         mouse_button=str(d.get("mouse_button", "Left")),
         scroll_delta=int(d.get("scroll_delta", 120)),
         delay_ms=int(d.get("delay_ms", 50)),
+        move_x=int(d.get("move_x", 0)),
+        move_y=int(d.get("move_y", 0)),
+        path_wobble_pct=int(d.get("path_wobble_pct", 0)),
+        move_speed_pct=int(d.get("move_speed_pct", 50)),
     )
 
 
@@ -193,6 +162,7 @@ def _macro_to_json(m: MacroDef) -> dict:
         "id": m.id,
         "name": m.name,
         "trigger": _keybind_to_json(m.trigger),
+        "trigger_modifiers": [_keybind_to_json(k) for k in m.trigger_modifiers],
         "mode": m.mode.value,
         "enabled": m.enabled,
         "humanize_jitter_pct": m.humanize_jitter_pct,
@@ -205,6 +175,7 @@ def _macro_from_json(d: dict) -> MacroDef:
         id=str(d.get("id") or _fallback_id("macro")),
         name=str(d.get("name", "Macro")),
         trigger=_keybind_from_json(d.get("trigger")),
+        trigger_modifiers=[_keybind_from_json(k) for k in d.get("trigger_modifiers", []) if isinstance(k, dict)],
         mode=_enum_from_value(MacroMode, d.get("mode"), MacroMode.ONCE),
         enabled=bool(d.get("enabled", True)),
         humanize_jitter_pct=int(d.get("humanize_jitter_pct", 15)),
@@ -417,28 +388,10 @@ def _write_all(app_state: AppState) -> None:
 
 
 def _repair_duplicate_ids(parsed: List[Tuple[ProfileDef, _ProfilePayload]]) -> bool:
-    """Self-heal profiles.json entries sharing an id -- the on-disk symptom
-    left behind by the now-fixed counter-based id bug (both id generators
-    used to restart at 1 every process launch, see _fallback_id's comment).
-    A shared id made the Active-profile check match multiple profiles at
-    once and made remove_profile() delete every profile sharing that id.
-
-    Reassigns a fresh id to every occurrence of a duplicate EXCEPT the last
-    one in on-disk order, which keeps the original id. Each profile keeps
-    its own name/settings/payload -- nothing is dropped or merged. Keeping
-    the last occurrence's id (rather than the first) means `active_id` --
-    itself just one id string, so it can't disambiguate on its own -- keeps
-    resolving to the same profile it did before repair in the case that
-    matters: create_profile_from_current()/import_profile() immediately mark
-    a brand-new profile active, so if a collision ever put two profiles on
-    the same id, the most-recently-appended (last) one is the one most
-    likely to be what `active_id` still points at.
-
-    Mutates the ProfileDef objects in `parsed` in place and returns whether
-    any repair happened, so the caller can leave a breadcrumb -- this
-    project has no configured logging handlers, so a comment at the call
-    site is the visibility this gets.
-    """
+    """Self-heals profiles.json entries sharing an id (old counter-based id
+    bug). Reassigns a fresh id to every occurrence except the last in
+    on-disk order, since active_id is most likely to point at the most
+    recently appended one. Mutates parsed in place; returns whether a repair happened."""
     counts: Dict[str, int] = {}
     for profile, _ in parsed:
         counts[profile.id] = counts.get(profile.id, 0) + 1
@@ -477,7 +430,13 @@ def load_all(app_state: AppState) -> None:
     for raw in raw_profiles:
         if not isinstance(raw, dict):
             continue
-        parsed.append(_profile_from_json(raw))
+        try:
+            parsed.append(_profile_from_json(raw))
+        except (TypeError, ValueError, AttributeError, KeyError, IndexError):
+            # One entry with a malformed field type (e.g. hand-edited or disk-corrupted
+            # profiles.json) must not take the whole app down at startup -- skip it,
+            # same tolerance parse_profile_import() already has for untrusted files.
+            continue
 
     if not any(p.protected for p, _ in parsed):
         default = ProfileDef(id=_fallback_id("profile"), name=DEFAULT_NAME, protected=True)
@@ -507,26 +466,9 @@ def load_all(app_state: AppState) -> None:
 
 
 def _resolve_window_select_target(ws: dict) -> ProcessInfo:
-    """A persisted Window Select target's `pid` is only valid for the OS
-    process instance that happened to be running when it was saved -- pids
-    aren't stable across that game's own restarts (a fresh launch always
-    gets a new one from Windows), so trusting the saved pid directly would
-    silently target a process that no longer exists. Real bug, found live
-    2026-09-13: after rebooting the app (or the game), a profile's saved
-    Window Select target stopped actually gating the Remapper/Macros, with
-    no visible error -- `remapper.py`'s window-filter gate just stayed
-    permanently closed since no window ever has that dead pid again,
-    indistinguishable from "nothing selected" without opening Settings to
-    notice, and the user had to manually reselect the process every time.
-
-    Re-resolves by exe name against a fresh enumeration at restore time
-    instead: if that exe is currently running, use its actual current pid.
-    Covers the common case this bug was reported in -- the target game
-    already running by the time the app (re)starts. Falls back to the saved
-    pid as a best-effort placeholder if the exe isn't currently found (game
-    not running yet) -- still shown in the UI, still safely inert (the gate
-    stays closed rather than open) until the game is found, same as before
-    this fix, just no longer silently wrong once the game IS running."""
+    """Re-resolves a saved target by exe name against a fresh process
+    enumeration, since a saved pid doesn't survive that game's own restart.
+    Falls back to the saved pid as a placeholder if the exe isn't running."""
     try:
         current = window_select.enumerate_target_windows()
     except OSError:
@@ -538,12 +480,9 @@ def _resolve_window_select_target(ws: dict) -> ProcessInfo:
 
 
 def apply_profile(app_state: AppState, profile_id: str) -> bool:
-    """Restore `profile_id`'s saved Remapper/Macros/Window-Select/Overlay
-    payload into the live AppState, applying the persist_* safety pattern to
-    Remapper/Macros/Window Select (Overlay is restored unconditionally --
-    see the module docstring's "Safety pattern" section for why). Used both
-    by `load_all()` at startup and by panels/profiles.py's Load button --
-    exactly one code path restores a profile's state."""
+    """Restores profile_id's saved payload into the live AppState. Remapper/
+    Macros/Window Select are force-disabled unless their persist_* flag is
+    set; Overlay always restores fully (passive, no safety concern)."""
     profile = next((p for p in app_state.profiles.profiles if p.id == profile_id), None)
     if profile is None:
         return False
@@ -730,13 +669,8 @@ def suggest_export_filename(app_state: AppState, profile_id: str) -> str:
 
 
 def _validate_import_shape(raw: object) -> bool:
-    """Structural gate that runs BEFORE any field is trusted -- guards
-    _profile_from_json()'s per-field `.get()` chains against an unexpected
-    type (e.g. `remapper` as a list instead of a dict) or an oversized
-    nested list, either of which could otherwise raise or exhaust memory.
-    Deliberately permissive on field CONTENT past this point -- individual
-    values still get cast/defaulted field-by-field exactly like a normal
-    disk-loaded profiles.json entry."""
+    """Guards against an unexpected type or oversized nested list before any
+    field is trusted -- permissive on field content, just structure."""
     if not isinstance(raw, dict):
         return False
     if not (set(raw.keys()) & _PROFILE_SHAPE_KEYS):

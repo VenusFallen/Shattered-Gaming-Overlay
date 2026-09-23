@@ -1,16 +1,7 @@
-"""input_inject.py -- pure user-mode input injection via the Win32
-`SendInput` API. This is the only way this project synthesizes input -- no
-driver, no ViGEm/virtual-controller HID emulation, no game-process memory
-writes.
-
-Every injected event is tagged with `INJECTED_MARKER` in `dwExtraInfo`;
-`input_hooks.py` reads it back out so consumers can tell their own injected
-input apart from real physical input or another tool's injection.
-
-No sleeps or jitter logic here -- humanized delay timing is macro_engine.py's
-concern; this module only ever fires a single instantaneous SendInput call.
-Has no dependency on input_hooks.py, so it stays importable/testable standalone.
-"""
+"""Pure user-mode input injection via the Win32 SendInput API -- no driver,
+no ViGEm/virtual-controller emulation, no game-process memory writes.
+Injected events are tagged with INJECTED_MARKER so input_hooks.py can tell
+them apart from real physical input."""
 
 from __future__ import annotations
 
@@ -27,9 +18,7 @@ user32 = ctypes.WinDLL("user32", use_last_error=True)
 # ---------------------------------------------------------------------------
 # Shared marker so input_hooks.py can recognize input WE injected.
 # ---------------------------------------------------------------------------
-# Arbitrary but stable 32-bit tag. Only needs to be unlikely to collide with
-# whatever other software on the machine happens to set in dwExtraInfo.
-INJECTED_MARKER = 0x53474F31  # "SGO1"
+INJECTED_MARKER = 0x53474F31  # "SGO1" -- arbitrary, just needs to be unlikely to collide
 
 
 class MouseButton(Enum):
@@ -42,10 +31,7 @@ class MouseButton(Enum):
 
 # ---------------------------------------------------------------------------
 # ctypes structures matching the real Win32 INPUT / MOUSEINPUT / KEYBDINPUT
-# layout. Field types (c_long for signed dx/dy, c_size_t standing in for
-# ULONG_PTR, which ctypes.wintypes does not expose) matter for correct
-# struct size/alignment on 64-bit -- get these wrong and SendInput silently
-# reads garbage or the union straddles wrong.
+# layout -- field types matter here for correct struct size/alignment on 64-bit.
 # ---------------------------------------------------------------------------
 
 ULONG_PTR = ctypes.c_size_t
@@ -124,17 +110,32 @@ MOUSEEVENTF_XDOWN = 0x0080
 MOUSEEVENTF_XUP = 0x0100
 MOUSEEVENTF_WHEEL = 0x0800
 MOUSEEVENTF_HWHEEL = 0x1000
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_ABSOLUTE = 0x8000
+MOUSEEVENTF_VIRTUALDESK = 0x4000
 
 XBUTTON1 = 0x0001
 XBUTTON2 = 0x0002
 
 WHEEL_DELTA = 120
 
-# Best-effort set of virtual-key codes that require KEYEVENTF_EXTENDEDKEY
-# when injected as scan codes (arrows, ins/del/home/end/pgup/pgdn, the
-# right-hand ctrl/alt, numlock, the numpad divide key, and the windows
-# keys). Not exhaustive, but covers everything a remapper/macro user is
-# likely to bind.
+# --- cursor position ---
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+SM_CXVIRTUALSCREEN = 78
+SM_CYVIRTUALSCREEN = 79
+
+
+class POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+user32.GetCursorPos.argtypes = (ctypes.POINTER(POINT),)
+user32.GetCursorPos.restype = wintypes.BOOL
+user32.GetSystemMetrics.argtypes = (ctypes.c_int,)
+user32.GetSystemMetrics.restype = ctypes.c_int
+
+# Virtual-key codes that require KEYEVENTF_EXTENDEDKEY when injected as scan codes. Not exhaustive, covers common binds.
 _EXTENDED_VKS = frozenset(
     {
         0x21,  # VK_PRIOR (Page Up)
@@ -232,11 +233,7 @@ def send_mouse_button(button: MouseButton, up: bool = False) -> None:
 
 
 def send_scroll(delta: int, horizontal: bool = False) -> None:
-    """Synthesize a mouse wheel event.
-
-    `delta` is in the same units as Windows' WHEEL_DELTA (120 = one
-    physical notch). Positive = forward/up (or right, if horizontal).
-    """
+    """Synthesize a mouse wheel event. delta is in WHEEL_DELTA units (120 = one notch); positive = forward/up (or right, if horizontal)."""
     flags = MOUSEEVENTF_HWHEEL if horizontal else MOUSEEVENTF_WHEEL
     mi = MOUSEINPUT(
         dx=0,
@@ -249,3 +246,97 @@ def send_scroll(delta: int, horizontal: bool = False) -> None:
     inp = INPUT(type=INPUT_MOUSE)
     inp.mi = mi
     _send(inp)
+
+
+def get_cursor_pos() -> tuple[int, int]:
+    """Current cursor position in virtual-desktop pixel coordinates."""
+    pt = POINT()
+    if not user32.GetCursorPos(ctypes.byref(pt)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    return pt.x, pt.y
+
+
+def _normalize_absolute(x: int, y: int) -> tuple[int, int]:
+    """Converts a virtual-desktop pixel coordinate to SendInput's 0-65535 absolute space, scoped to the full virtual desktop (all monitors)."""
+    origin_x = user32.GetSystemMetrics(SM_XVIRTUALSCREEN)
+    origin_y = user32.GetSystemMetrics(SM_YVIRTUALSCREEN)
+    width = user32.GetSystemMetrics(SM_CXVIRTUALSCREEN)
+    height = user32.GetSystemMetrics(SM_CYVIRTUALSCREEN)
+    norm_x = int((x - origin_x) * 65536 / width) if width else 0
+    norm_y = int((y - origin_y) * 65536 / height) if height else 0
+    return norm_x, norm_y
+
+
+def send_mouse_move_absolute(x: int, y: int) -> None:
+    """Moves the cursor to an exact virtual-desktop pixel coordinate. One instantaneous jump, not a tracked/animated glide."""
+    norm_x, norm_y = _normalize_absolute(x, y)
+    mi = MOUSEINPUT(
+        dx=norm_x,
+        dy=norm_y,
+        mouseData=0,
+        dwFlags=MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        time=0,
+        dwExtraInfo=INJECTED_MARKER,
+    )
+    inp = INPUT(type=INPUT_MOUSE)
+    inp.mi = mi
+    _send(inp)
+
+
+def send_mouse_move_relative(dx: int, dy: int) -> None:
+    """Nudges the cursor by a fixed (dx, dy) offset -- e.g. a Macro's
+    Move-By step. One instantaneous call, no tracking/animation of its own."""
+    mi = MOUSEINPUT(
+        dx=dx,
+        dy=dy,
+        mouseData=0,
+        dwFlags=MOUSEEVENTF_MOVE,
+        time=0,
+        dwExtraInfo=INJECTED_MARKER,
+    )
+    inp = INPUT(type=INPUT_MOUSE)
+    inp.mi = mi
+    _send(inp)
+
+
+def send_mouse_move_by_step(dx: int, dy_up_positive: int) -> None:
+    """Same as send_mouse_move_relative(), except dy is "positive = up" (the human-readable convention), not SendInput's raw positive-=-down."""
+    send_mouse_move_relative(dx, -dy_up_positive)
+
+
+# ---------------------------------------------------------------------------
+# Process timer resolution -- Windows defaults to a ~15.6ms scheduler tick, so
+# threading.Event.wait()/time.sleep() calls shorter than that (e.g. macro_engine.py's
+# per-substep glide waits) round up to it instead of the requested duration.
+# ---------------------------------------------------------------------------
+
+winmm = ctypes.WinDLL("winmm")
+winmm.timeBeginPeriod.argtypes = (ctypes.c_uint,)
+winmm.timeBeginPeriod.restype = ctypes.c_uint
+winmm.timeEndPeriod.argtypes = (ctypes.c_uint,)
+winmm.timeEndPeriod.restype = ctypes.c_uint
+
+_TIMER_RESOLUTION_MS = 1
+_TIMERR_NOERROR = 0
+_timer_resolution_raised = False  # tracks whether timeBeginPeriod actually succeeded, so restore only matches a real begin
+
+
+def raise_timer_resolution() -> None:
+    """Requests a 1ms system timer resolution for this process's whole
+    lifetime, so short waits actually resolve close to what was asked
+    instead of rounding up to the OS default tick. Call once at startup;
+    pair with restore_timer_resolution() at shutdown. Affects every thread
+    in the process, not just input injection -- this lives here because
+    the substep glide timing it exists for is input_inject's own concern."""
+    global _timer_resolution_raised
+    if winmm.timeBeginPeriod(_TIMER_RESOLUTION_MS) == _TIMERR_NOERROR:
+        _timer_resolution_raised = True
+
+
+def restore_timer_resolution() -> None:
+    """Releases the request made by raise_timer_resolution(), if it succeeded. timeEndPeriod must be called
+    with the exact value a prior timeBeginPeriod used -- calling it unpaired is a documented error, not a no-op."""
+    global _timer_resolution_raised
+    if _timer_resolution_raised:
+        winmm.timeEndPeriod(_TIMER_RESOLUTION_MS)
+        _timer_resolution_raised = False

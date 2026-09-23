@@ -1,14 +1,7 @@
-"""panels/remapper.py -- Remapper panel: two independent sections.
-
-Standard Remapping: plain 1:1 source -> destination key/button pairs
-(app_state.RemapEntry) -- destination always mirrors source down/up, no mode
-concept. Auto Toggle/Hold: single-key entries that change how that key's OWN
-presses land (app_state.AutoToggleHoldEntry) -- Toggle latches it down/up
-across presses, Hold converts a game's toggle-only action into hold-to-use.
-
-Purely UI state; no matching or SendInput happens here -- that's the
-root-level remapper.py, which reads this state each frame via
-update_snapshot().
+"""panels/remapper.py -- Remapper panel: Standard Remapping (1:1 source ->
+destination key/button pairs) and Auto Toggle/Hold (single-key entries that
+change how that key's own presses land). Purely UI state; matching and
+SendInput happen in the root-level remapper.py via update_snapshot().
 """
 
 from __future__ import annotations
@@ -34,8 +27,7 @@ def _spacer() -> None:
 
 
 def _handle_capture(ctx: PanelContext, entry: RemapEntry, field_name: str) -> None:
-    """Draw the bind button for `entry.<field_name>` and manage capture
-    start/poll/cancel for it."""
+    # Draw the bind button for `entry.<field_name>` and manage capture start/poll/cancel for it.
     state = ctx.state.remapper
     is_target = state.capturing_entry_id == entry.id and state.capturing_field == field_name
     current: KeyBind = getattr(entry, field_name)
@@ -53,8 +45,7 @@ def _handle_capture(ctx: PanelContext, entry: RemapEntry, field_name: str) -> No
 
     clicked = widgets.bind_button(ctx.theme, f"{entry.id}-{field_name}", current.name, is_target)
     if clicked and not is_target:
-        # Starting a new capture always wins -- only one can be active
-        # across BOTH sections of this panel.
+        # Only one capture can be active across BOTH sections of this panel.
         ctx.capture.begin_capture()
         state.capturing_entry_id = entry.id
         state.capturing_field = field_name
@@ -62,11 +53,7 @@ def _handle_capture(ctx: PanelContext, entry: RemapEntry, field_name: str) -> No
 
 
 def _handle_auto_capture(ctx: PanelContext, entry: AutoToggleHoldEntry) -> None:
-    """Draw the bind button for an Auto Toggle/Hold entry's single `key`
-    field. Mirrors `_handle_capture` above but against `capturing_auto_id`,
-    which is tracked separately so a capture started here doesn't get
-    misread as belonging to a standard remap entry's source/destination
-    (and vice versa)."""
+    # Mirrors _handle_capture but tracks `capturing_auto_id` separately so it's never mistaken for a standard entry's capture.
     state = ctx.state.remapper
     is_target = state.capturing_auto_id == entry.id
 
@@ -127,14 +114,7 @@ def _render_standard_section(ctx: PanelContext) -> None:
             _handle_capture(ctx, entry, "destination")
 
             imgui.same_line()
-            # Pinned to the card's right edge, not chained via _spacer() --
-            # the preceding bind_button's rendered width balloons to the
-            # "Press a key... (Esc to cancel)" label while mid-capture, which
-            # can push a same-line()-chained button off the visible card (no
-            # horizontal scrollbar exists to reveal it). right_pinned_cursor_x()
-            # falls back to flow instead of overlapping if the row still runs
-            # wider than the pinned position. Same fix as panels/macros.py's
-            # per-step delete button.
+            # Pinned to the card's right edge -- a mid-capture bind_button's label can otherwise push this off-card.
             imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
             if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
                 remove_id = entry.id
@@ -201,8 +181,7 @@ def _render_auto_section(ctx: PanelContext) -> None:
                 )
 
             imgui.same_line()
-            # Same right-edge pin, same reason -- see the standard section's
-            # delete button above.
+            # Same right-edge pin as the standard section's delete button above.
             imgui.set_cursor_pos_x(widgets.right_pinned_cursor_x())
             if imgui.button(f"{fa.ICON_FA_TRASH}##remove"):
                 remove_id = entry.id

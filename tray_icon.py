@@ -1,24 +1,8 @@
 """tray_icon.py -- system tray icon for the Companion window's
-minimize-to-tray behavior.
-
-Companion-window-only concern; must never touch the HUD overlay, which
-renders purely off its own per-element toggles regardless of tray state.
-Only calls Win32 APIs against the Companion window's own HWND and this
-module's own hidden tray-icon message window.
-
-Own background thread + raw ctypes Win32 calls (no pywin32), same pattern as
-hud_overlay.py's render thread. Runs a never-shown hidden window purely to
-receive the Shell_NotifyIcon callback and popup-menu WM_COMMAND.
-
-Uses the classic (pre-NOTIFYICON_VERSION_4) callback shape deliberately --
-`uCallbackMessage`'s lParam is the raw mouse message rather than v4's packed
-icon-id-plus-message form. Simpler and sufficient for a two-item menu.
-
-Public API: start(), stop(), is_running().
-
-Quit goes through the same `RunnerParams.app_shall_exit` flag titlebar.py's
-`_close()` uses, so the normal shutdown path still runs instead of killing
-the process out from under it.
+minimize-to-tray behavior. Companion-window-only concern; never touches the
+HUD overlay, which renders purely off its own per-element toggles. Own
+background thread + raw ctypes Win32 calls (no pywin32), same pattern as
+hud_overlay.py. Public API: start(), stop(), is_running().
 """
 
 from __future__ import annotations
@@ -256,6 +240,7 @@ class TrayIcon:
             _user32.PostQuitMessage(0)
             return 0
         if msg == _WM_TRAYICON:
+            # Classic (pre-NOTIFYICON_VERSION_4) callback shape -- lParam is the raw mouse message, not v4's packed form.
             event = lparam & 0xFFFFFFFF
             if event == _WM_LBUTTONDBLCLK:
                 _restore_companion_window()
@@ -296,10 +281,8 @@ class TrayIcon:
             pt = wintypes.POINT()
             _user32.GetCursorPos(ctypes.byref(pt))
 
-            # Documented Shell_NotifyIcon/TrackPopupMenu requirement: bring
-            # the tray window to foreground before TrackPopupMenu, then post
-            # a harmless WM_NULL so the popup dismisses correctly. No
-            # TPM_NONOTIFY -- _wnd_proc needs the resulting WM_COMMAND.
+            # Documented requirement: foreground the window before TrackPopupMenu, then post a harmless WM_NULL so
+            # it dismisses correctly. No TPM_NONOTIFY -- _wnd_proc needs the resulting WM_COMMAND.
             _user32.SetForegroundWindow(self._hwnd)
             _user32.TrackPopupMenu(hmenu, _TPM_RIGHTBUTTON, pt.x, pt.y, 0, self._hwnd, None)
             _user32.PostMessageW(self._hwnd, _WM_NULL, 0, 0)
@@ -318,10 +301,8 @@ class TrayIcon:
 
         _user32.RegisterClassW(ctypes.byref(wc))
 
-        # Never shown -- exists only to own a message queue for the
-        # Shell_NotifyIcon callback + popup menu. Not HWND_MESSAGE:
-        # TrackPopupMenu/SetForegroundWindow behave more predictably against
-        # an ordinary, if invisible, top-level window.
+        # Never shown -- exists only to own a message queue. Not HWND_MESSAGE: TrackPopupMenu/SetForegroundWindow
+        # behave more predictably against an ordinary, if invisible, top-level window.
         hwnd = _user32.CreateWindowExW(
             0, self._CLASS_NAME, "SGO Tray", _WS_OVERLAPPED,
             0, 0, 0, 0, None, None, hinstance, None,

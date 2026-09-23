@@ -1,30 +1,8 @@
-"""tests/test_window_select_target_pid.py -- coverage for window_select.py's
-`set_target_exe_name()`/`cached_target_pid()`/`_maybe_reacquire_target()`,
-the live, background-thread-maintained pid resolution that makes
-remapper.py's window-filter gate resilient to the targeted game restarting
-mid-session with a new pid.
-
-Found live 2026-09-15: `_reacquire_selected_if_stale()` (see
-test_window_select_reacquire.py) only runs as part of `refresh_if_stale()`,
-which is only ever called from the Companion window's own render callback --
-and that callback stops firing entirely the instant the window is minimized,
-which is exactly how the app is normally left for the rest of a gaming
-session. remapper.py's gate used to read a pid snapshotted once in
-`update_snapshot()` (also Companion-frame-driven), so if the targeted game
-restarted with a new pid while the Companion window sat minimized, nothing
-ever noticed -- the user had to un-minimize, wait for a frame, AND have that
-frame's ambient refresh catch it, or just manually reselect.
-
-This module's fix: `set_target_exe_name()` only needs to be called ONCE (by
-remapper.py's `update_snapshot()`, itself still only Companion-frame-driven)
-to arm the target; from then on, `cached_target_pid()` is kept fresh by the
-SAME independent background thread that already tracks foreground focus
-regardless of window state -- no further Companion-frame activity required.
-
-Never spins the real background thread or makes a real Win32 EnumWindows
-call -- `_maybe_reacquire_target()` is exercised directly (mirroring how
-`_focus_poll_loop()` calls it), with `enumerate_target_windows()`
-monkeypatched.
+"""Coverage for window_select.py's `set_target_exe_name()`/`cached_target_pid()`/`_maybe_reacquire_target()`,
+the live, background-thread-maintained pid resolution that makes remapper.py's window-filter gate resilient
+to the targeted game restarting mid-session with a new pid, even while the Companion window is minimized.
+Never spins the real background thread or makes a real Win32 call -- `_maybe_reacquire_target()` is
+exercised directly (mirroring how `_focus_poll_loop()` calls it), with `enumerate_target_windows()` monkeypatched.
 """
 
 from __future__ import annotations
@@ -146,10 +124,7 @@ def test_maybe_reacquire_survives_enumeration_error(monkeypatch):
 
 
 def test_full_scenario_app_boots_before_game_then_game_launches(monkeypatch):
-    """The exact real-world sequence this fix was for: a profile loads
-    (arming the target) before the game is running at all -- correctly
-    inert -- then the game launches later, picked up on the next tick with
-    no Companion-frame involved at either step."""
+    """A profile loads (arming the target) before the game is running at all -- correctly inert -- then the game launches later, picked up on the next tick."""
     monkeypatch.setattr(window_select, "enumerate_target_windows", lambda: [])
     window_select.set_target_exe_name("eft.exe")  # profile loaded, game not running yet
     window_select._maybe_reacquire_target(now=100.0)

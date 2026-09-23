@@ -20,9 +20,7 @@ _PREVIEW_ICON_R = 20.0
 
 
 def _draw_crosshair_preview(draw_list, cx: float, cy: float, style: str, col: int) -> None:
-    """Small static icon of `style`, mirroring hud_overlay.py's real
-    _draw_crosshair proportions but without its black readability outline --
-    not needed on a themed card background."""
+    # Mirrors hud_overlay.py's real _draw_crosshair proportions minus its black outline -- not needed on a themed card bg.
     r = _PREVIEW_ICON_R
     gap = 3.0
     thick = 2.0
@@ -47,8 +45,7 @@ def _draw_crosshair_preview(draw_list, cx: float, cy: float, style: str, col: in
 
 
 def _crosshair_style_picker(theme, current: str) -> str:
-    """Horizontal row of clickable preview cards -- replaces a plain dropdown
-    so the user sees each style before picking it."""
+    # Clickable preview cards instead of a plain dropdown, so the user sees each style before picking it.
     new_style = current
     draw_list = imgui.get_window_draw_list()
     u32 = lambda rgba: imgui.color_convert_float4_to_u32(imgui.ImVec4(*rgba))  # noqa: E731

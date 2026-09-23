@@ -1,10 +1,8 @@
-"""panels/window_select.py -- Target Window: pick a specific running process,
-or leave global. Purely UI rendering over app_state.WindowSelectState;
+"""panels/window_select.py -- Target Window card: pick a specific running
+process, or leave global. Purely UI rendering over app_state.WindowSelectState;
 process enumeration and OS-focus tracking live in the root-level
-window_select.py, wired in via refresh_if_stale().
-
-Folded into the Settings panel as a card (`render_section`), not a
-standalone tab.
+window_select.py, wired in via refresh_if_stale(). Rendered as a card inside
+the Settings panel (`render_section`), not a standalone tab.
 """
 
 from __future__ import annotations

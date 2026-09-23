@@ -1,19 +1,7 @@
-"""tests/test_profile_id_repair.py -- unit coverage for the uuid-based id
-generators (app_state._next_id / profiles._fallback_id) and profiles.py's
-load-time duplicate-id repair pass (profiles._repair_duplicate_ids(), wired
-into load_all()).
-
-Real bug this closes: both id generators used to be a plain in-memory
-counter starting at 1, so the first profile/remap-entry/macro/step created
-in ANY app session collided with the first one created in a previous
-session. Two profiles sharing an id made the Active-profile check in
-panels/profiles.py match both at once, and made
-ProfilesState.remove_profile()'s list-comprehension delete every profile
-sharing that id instead of just the one the user clicked delete on.
-
-Isolates profiles.PROFILES_FILE to tmp_path for every test here, per
-agent-rules.md's testing section -- this suite never touches the real
-%LOCALAPPDATA%/profiles.json.
+"""Unit coverage for the uuid-based id generators (app_state._next_id / profiles._fallback_id) and
+profiles.py's load-time duplicate-id repair pass (profiles._repair_duplicate_ids(), wired into load_all()).
+Closes a real bug where a restarting in-memory counter let ids collide across sessions. Isolates
+profiles.PROFILES_FILE to tmp_path -- never touches the real %LOCALAPPDATA%/profiles.json.
 """
 
 from __future__ import annotations
@@ -122,10 +110,7 @@ def _raw_profile(profile_id: str, name: str, protected: bool = False) -> dict:
 
 
 def test_load_all_repairs_duplicate_ids_and_preserves_active_profile(tmp_path):
-    # Default (protected) plus two colliding non-protected profiles, the
-    # second (later-written) of which is the one active_id points at --
-    # mirrors the real corruption pattern (a second session's first-created
-    # profile colliding with the first session's).
+    # Default (protected) plus two colliding non-protected profiles; active_id points at the later-written one.
     raw = [
         _raw_profile("profile-default", "Default", protected=True),
         _raw_profile("profile-restored-1", "Tarkov"),
@@ -141,9 +126,7 @@ def test_load_all_repairs_duplicate_ids_and_preserves_active_profile(tmp_path):
     assert len(ids) == len(set(ids))  # no more duplicates
     assert "Tarkov" in names and "Battlefield" in names  # both profiles survived
 
-    # active_id still resolves, and to the profile that was actually active
-    # before the repair (the later-written "Battlefield", which kept the
-    # original shared id).
+    # active_id still resolves to the profile actually active before repair (the later-written "Battlefield").
     active = next(p for p in state.profiles.profiles if p.id == state.profiles.active_id)
     assert active.name == "Battlefield"
 
@@ -166,6 +149,24 @@ def test_load_all_repair_persists_fixed_ids_back_to_disk(tmp_path):
         on_disk = json.load(f)
     disk_ids = [p["id"] for p in on_disk["profiles"]]
     assert len(disk_ids) == len(set(disk_ids))
+
+
+def test_load_all_skips_a_malformed_profile_entry_instead_of_crashing(tmp_path):
+    # A hand-edited/corrupted entry with a wrong-typed field (remapper as a
+    # string, not a dict) must not take down startup for every other profile.
+    bad = _raw_profile("profile-bad", "Corrupt", protected=True)
+    bad["remapper"] = "not-a-dict"
+    good = _raw_profile("profile-good", "Good")
+    _write_raw_profiles_json(profiles.PROFILES_FILE, active_id="profile-bad", raw_profiles=[bad, good])
+
+    state = app_state.new_app_state()
+    profiles.load_all(state)  # must not raise
+
+    names = [p.name for p in state.profiles.profiles]
+    assert "Corrupt" not in names
+    assert "Good" in names
+    # No protected profile survived the bad entry -- a fresh Default is synthesized.
+    assert any(p.protected for p in state.profiles.profiles)
 
 
 def test_load_all_repair_does_not_drop_either_profiles_payload(tmp_path):

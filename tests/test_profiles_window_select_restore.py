@@ -1,21 +1,7 @@
-"""tests/test_profiles_window_select_restore.py -- coverage for
-profiles.py's `_resolve_window_select_target()`/`apply_profile()` re-
-resolving a persisted Window Select target by exe name instead of trusting
-its saved pid directly.
-
-Found live 2026-09-13: a pid saved in profiles.json is only valid for the
-OS process instance that was running at save time -- pids aren't stable
-across that game's own restarts, so after rebooting the app (or the game),
-a profile's saved Window Select target silently stopped actually gating the
-Remapper/Macros (remapper.py's window-filter gate stays permanently closed
-since no window ever has that dead pid again), indistinguishable from
-"nothing selected" without opening Settings to notice.
-
-Deliberately monkeypatches profiles.PROFILES_FILE per-test (see
-test_profiles_share.py's own fixture, same convention) so `_write_all()`'s
-real disk write never touches the actual %LOCALAPPDATA%/profiles.json, and
-monkeypatches profiles.window_select.enumerate_target_windows() so this
-suite never depends on real running processes or makes real Win32 calls.
+"""Coverage for profiles.py's `_resolve_window_select_target()`/`apply_profile()` re-resolving a persisted
+Window Select target by exe name instead of trusting its saved pid directly, since a pid isn't stable
+across a game's own restarts. Monkeypatches PROFILES_FILE and window_select.enumerate_target_windows() so
+this suite never touches real disk or depends on real running processes.
 """
 
 from __future__ import annotations

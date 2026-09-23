@@ -16,7 +16,7 @@ from app_state import AppState
 from hud_overlay import hud_overlay
 from key_capture import capture_service
 from panel_context import PanelContext
-from panels import about, dashboard, macros, overlay, profiles, remapper, settings
+from panels import about, dashboard, macros, overlay, profiles, remapper, settings, soundboard
 
 _SIDEBAR_WIDTH = 220.0
 
@@ -28,6 +28,7 @@ _NAV_ITEMS = (
     ("overlay", fa.ICON_FA_CROSSHAIRS, "Overlay"),
     ("macros", fa.ICON_FA_LIST_OL, "Macros"),
     ("remapper", fa.ICON_FA_KEYBOARD, "Remapper"),
+    ("soundboard", fa.ICON_FA_MUSIC, "Soundboard"),
     ("profiles", fa.ICON_FA_FOLDER_OPEN, "Profiles"),
     ("settings", fa.ICON_FA_COG, "Settings"),
     ("about", fa.ICON_FA_INFO_CIRCLE, "About"),
@@ -38,6 +39,7 @@ _PANEL_RENDERERS = {
     "overlay": overlay.render,
     "macros": macros.render,
     "remapper": remapper.render,
+    "soundboard": soundboard.render,
     "profiles": profiles.render,
     "settings": settings.render,
     "about": about.render,
