@@ -22,6 +22,7 @@ import settings_store
 import shell
 import soundboard_store
 import theme as theme_module
+import titlebar
 import tray_icon as tray_icon_module
 import updater
 import window_select
@@ -69,6 +70,10 @@ def _post_init(app_state: AppState) -> None:
     io = imgui.get_io()
     io.config_flags |= imgui.ConfigFlags_.nav_enable_keyboard
     _set_window_icon()
+    # GLFW omits WS_THICKFRAME for this borderless window; titlebar.py's own corner-resize needs it.
+    titlebar.ensure_resizable_frame_style()
+    # Adding WS_THICKFRAME above makes DWM paint a thin accent line across the top edge; this suppresses it.
+    titlebar.install_nccalcsize_fix()
     # Windows' default ~15.6ms timer tick would otherwise round up macro_engine.py's short per-substep waits.
     input_inject.raise_timer_resolution()
     # HUD overlay: starts idle, runs for the app's whole lifetime;
@@ -134,7 +139,7 @@ def main() -> None:
     runner_params.ini_filename = "ShatteredGamingOverlay.ini"
 
     runner_params.app_window_params.window_title = WINDOW_TITLE
-    runner_params.app_window_params.window_geometry.size = (960, 600)
+    runner_params.app_window_params.window_geometry.size = (1010, 600)
     runner_params.app_window_params.restore_previous_geometry = True
     runner_params.app_window_params.resizable = True
     runner_params.app_window_params.borderless = True

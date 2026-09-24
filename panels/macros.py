@@ -162,6 +162,35 @@ def _handle_recording(ctx: PanelContext, macro) -> None:
             imgui.set_tooltip("Another macro is currently recording -- stop it first.")
 
 
+def _draw_reorder_arrow(pointing_up: bool) -> None:
+    """Draws a small filled triangle over the last-submitted item, sized to its actual rect -- the FontAwesome
+    chevron glyphs render at the loaded icon font's fixed size, which overflows a half-height button."""
+    draw_list = imgui.get_window_draw_list()
+    r_min = imgui.get_item_rect_min()
+    r_max = imgui.get_item_rect_max()
+    cx = (r_min.x + r_max.x) * 0.5
+    cy = (r_min.y + r_max.y) * 0.5
+    half_w, half_h = 3.5, 2.0
+    color = imgui.get_color_u32(imgui.Col_.text)
+    if pointing_up:
+        p1, p2, p3 = imgui.ImVec2(cx - half_w, cy + half_h), imgui.ImVec2(cx + half_w, cy + half_h), imgui.ImVec2(cx, cy - half_h)
+    else:
+        p1, p2, p3 = imgui.ImVec2(cx - half_w, cy - half_h), imgui.ImVec2(cx + half_w, cy - half_h), imgui.ImVec2(cx, cy + half_h)
+    draw_list.add_triangle_filled(p1, p2, p3, color)
+
+
+def _move_step_up(macro, step_id: str) -> None:
+    idx = next((i for i, s in enumerate(macro.steps) if s.id == step_id), None)
+    if idx is not None and idx > 0:
+        macro.steps[idx - 1], macro.steps[idx] = macro.steps[idx], macro.steps[idx - 1]
+
+
+def _move_step_down(macro, step_id: str) -> None:
+    idx = next((i for i, s in enumerate(macro.steps) if s.id == step_id), None)
+    if idx is not None and idx < len(macro.steps) - 1:
+        macro.steps[idx + 1], macro.steps[idx] = macro.steps[idx], macro.steps[idx + 1]
+
+
 def _render_steps(ctx: PanelContext, macro) -> None:
     theme = ctx.theme
     widgets.section_title("Steps")
@@ -171,11 +200,44 @@ def _render_steps(ctx: PanelContext, macro) -> None:
     _handle_recording(ctx, macro)
 
     remove_id = None
+    move_up_id = None
+    move_down_id = None
     for i, step in enumerate(macro.steps):
         imgui.push_id(step.id)
         with widgets.card(theme, f"step-{step.id}", size=(0, 0)):
-            imgui.text(f"{i + 1}.")
-            imgui.same_line()
+            # Reorder buttons live at the row's own start, ahead of everything else -- the row's variable-width
+            # kind-specific content and the right-pinned delete button already crowd the rest of the row, so
+            # this is the one spot that never has to compete for space with either. Stacked (not side by side)
+            # and half-height each, so the pair costs one button's worth of horizontal space, not two.
+            reorder_gap = 3.0
+            reorder_btn_size = imgui.ImVec2(24.0, imgui.get_frame_height() * 0.5)
+            # The stack is exactly one gap taller than a normal control (two half-height buttons + the gap
+            # between them) -- starting it half a gap earlier centers it against the combo, rather than moving
+            # the combo (and everything after it in the row) off the row's normal, shared baseline.
+            row_x = imgui.get_cursor_pos_x()
+            row_top_y = imgui.get_cursor_pos_y()
+            imgui.set_cursor_pos_y(row_top_y - reorder_gap / 2.0)
+            imgui.push_style_var(imgui.StyleVar_.item_spacing, imgui.ImVec2(imgui.get_style().item_spacing.x, reorder_gap))
+            if i == 0:
+                imgui.begin_disabled()
+            if imgui.button("##moveup", reorder_btn_size):
+                move_up_id = step.id
+            _draw_reorder_arrow(pointing_up=True)
+            if i == 0:
+                imgui.end_disabled()
+            if i == len(macro.steps) - 1:
+                imgui.begin_disabled()
+            if imgui.button("##movedown", reorder_btn_size):
+                move_down_id = step.id
+            _draw_reorder_arrow(pointing_up=False)
+            if i == len(macro.steps) - 1:
+                imgui.end_disabled()
+            imgui.pop_style_var()
+
+            # Positioned explicitly, not via same_line() + set_cursor_pos_y(): ImGui measures the "current line" for
+            # everything chained after this from where same_line() put the cursor, ignoring a later Y override --
+            # which left the bind/delay/delete widgets riding the arrow stack's lower line, not the combo's.
+            imgui.set_cursor_pos(imgui.ImVec2(row_x + reorder_btn_size.x + imgui.get_style().item_spacing.x, row_top_y))
 
             kind_idx = list(MacroStepKind).index(step.kind)
             imgui.set_next_item_width(160)
@@ -248,6 +310,10 @@ def _render_steps(ctx: PanelContext, macro) -> None:
                 remove_id = step.id
         imgui.pop_id()
 
+    if move_up_id is not None:
+        _move_step_up(macro, move_up_id)
+    if move_down_id is not None:
+        _move_step_down(macro, move_down_id)
     if remove_id is not None:
         macro.steps = [s for s in macro.steps if s.id != remove_id]
 
