@@ -1,43 +1,7 @@
-"""macro_recorder.py -- "press Record, perform the actions, press Stop, get
-real MacroStep objects" capture for the Macros panel's step editor.
-
-Owns its own dedicated `HookManager`, separate from
-`key_capture.capture_service` (built for a single next-press capture, not a
-continuous multi-event session) and from `remapper.remapper_engine` (which
-suppresses matched events and only publishes its post-remap stream --
-recording needs a faithful, unsuppressed view of what was physically
-pressed). Every callback here returns `None` (observe-only, same contract as
-key_capture.py).
-
-`HookManager` callbacks fire on their own background thread and only ever
-append immutable `_RawEvent` records to a lock-guarded list -- never touch
-`app_state.MacroDef`/`MacroStep` from there. `stop()` (Companion thread)
-drains the buffer into `RecordedStep` values; `panels/macros.py` turns those
-into real `MacroStep` objects via `macro.add_step()` so ID generation stays
-centralized in app_state.py.
-
-`HookManager.on_mouse_move` is never registered -- this project doesn't
-synthesize continuous mouse movement, so recording never listens for it.
-
-Tap-vs-hold / delay conversion rules:
-- A press+release with hold duration <= `TAP_HOLD_THRESHOLD_MS` (120ms)
-  collapses into a single `KEY_TAP`/`MOUSE_CLICK` step; longer becomes
-  `KEY_DOWN` / `DELAY` (sized to the real hold) / `KEY_UP` (or the
-  mouse-button equivalents).
-- A `DELAY` step is synthesized between consecutive actions sized to the
-  real gap between them, but only if that gap is >= `MIN_DELAY_MS` (20ms) --
-  smaller gaps are dropped rather than emitting a near-zero delay.
-- OS key-repeat (Windows re-fires WM_KEYDOWN while a key is held) is
-  filtered: a key-down while that key is already open is ignored.
-- A key/button still open when `stop()` is called is closed as a hold
-  ending at the stop time, so a still-held key isn't silently dropped.
-- Escape is never recorded -- it's reserved as the cancel/stop-recording key
-  throughout the Companion window (see panels/macros.py).
-- The physical left-click that presses the Stop button itself is never
-  recorded as a trailing step: `panels/macros.py` calls `stop()` on
-  mouse-DOWN, before the matching mouse-up can be buffered, so any
-  still-open LEFT press at that instant is discarded, not closed-as-a-hold
-  (see `_convert_events`).
+"""Press Record, perform the actions, press Stop, get real MacroStep objects -- capture for the Macros
+panel's step editor. Owns its own dedicated `HookManager` (observe-only, never suppresses), separate from
+`key_capture.capture_service` (single next-press only) and `remapper.remapper_engine` (post-remap stream
+only, not a faithful view of physical input).
 """
 
 from __future__ import annotations
@@ -53,11 +17,11 @@ from input_hooks import HookManager, KeyEvent, MouseButtonEvent, MouseScrollEven
 from input_inject import MouseButton
 from key_capture import KeyBind, UNBOUND
 
-# --- tunables (documented above) -------------------------------------------
-TAP_HOLD_THRESHOLD_MS = 120
-MIN_DELAY_MS = 20
+# --- tunables ---------------------------------------------------------------
+TAP_HOLD_THRESHOLD_MS = 120  # press+release under this collapses to a TAP/CLICK step instead of DOWN/DELAY/UP
+MIN_DELAY_MS = 20  # gaps between actions shorter than this are dropped instead of emitting a near-zero delay
 
-_VK_ESCAPE = 0x1B
+_VK_ESCAPE = 0x1B  # reserved cancel/stop-recording key -- never recorded, see panels/macros.py
 
 _MOUSE_BUTTON_LABELS: Dict[MouseButton, str] = {
     MouseButton.LEFT: "Left",
@@ -87,9 +51,7 @@ class _RawEvent:
 
 @dataclass(frozen=True)
 class RecordedStep:
-    """Plain conversion result -- NOT app_state.MacroStep. The panel turns
-    each of these into a real MacroStep via macro.add_step() so ID
-    generation stays centralized in app_state.py."""
+    """Plain conversion result -- NOT app_state.MacroStep; the panel turns these into real MacroStep via macro.add_step() so ID generation stays centralized."""
 
     kind: MacroStepKind
     key: KeyBind = UNBOUND
@@ -99,9 +61,7 @@ class RecordedStep:
 
 
 class MacroRecorder:
-    """One dedicated hook, started lazily on first Record click and left
-    running afterward (same "cheap to keep alive" precedent as
-    key_capture.KeyCaptureService)."""
+    """One dedicated hook, started lazily on first Record click and left running afterward."""
 
     def __init__(self) -> None:
         self._hook: Optional[HookManager] = None
@@ -117,7 +77,7 @@ class MacroRecorder:
             hook.on_key_up(self._on_key)
             hook.on_mouse_button(self._on_mouse_button)
             hook.on_scroll(self._on_scroll)
-            # Deliberately no on_mouse_move registration -- see module docstring.
+            # No on_mouse_move -- this project never synthesizes continuous mouse movement.
             self._hook = hook
         if not self._hook.is_running:
             self._hook.start()
@@ -143,9 +103,7 @@ class MacroRecorder:
             self._started_at = time.monotonic()
 
     def stop(self) -> List[RecordedStep]:
-        """Stop recording and convert whatever was captured into
-        RecordedStep values. Safe to call even if nothing was recorded
-        (returns an empty list)."""
+        """Stop recording and convert whatever was captured into RecordedStep values; safe to call with nothing recorded."""
         with self._lock:
             self._recording = False
             events = self._events
@@ -154,8 +112,7 @@ class MacroRecorder:
         return _convert_events(events, stop_time)
 
     def cancel(self) -> None:
-        """Stop recording and discard whatever was captured -- no steps
-        produced."""
+        """Stop recording and discard whatever was captured -- no steps produced."""
         with self._lock:
             self._recording = False
             self._events = []
@@ -207,10 +164,7 @@ class MacroRecorder:
 
 @dataclass
 class _Action:
-    """One completed down/up pair (or an instantaneous scroll tick), resolved
-    into its final RecordedStep shape but not yet placed into the output
-    list -- kept separate from emission so overlapping presses can be sorted
-    back into real press-start order first. See `_convert_events`."""
+    """One completed down/up pair (or scroll tick), resolved into its final step shape but held back from emission so overlapping presses can be sorted into real press-start order first."""
 
     start: float
     end: float
@@ -218,22 +172,9 @@ class _Action:
 
 
 def _convert_events(events: List[_RawEvent], stop_time: float) -> List[RecordedStep]:
-    """Two passes: (1) resolve every completed down/up pair or scroll tick
-    into an `_Action` -- tap-vs-hold and key-repeat filtering happen here,
-    independent of ordering; (2) sort `_Action`s by start (press) time and
-    emit them in that order, inserting a Delay for any real gap between one
-    action's end and the next's start.
-
-    Sorting by start time, not close time, matters for overlapping presses:
-    if a movement key is held, then a second key is tapped mid-hold and
-    released first, close-order resolution would emit the tap before the
-    held key's own Down step, reordering what was actually pressed first.
-
-    Can't represent true concurrency -- MacroStep sequences are strictly
-    linear, so two genuinely overlapping holds still serialize into
-    back-to-back blocks. Inherent to the step-sequence format; doesn't
-    affect the common single-action-at-a-time case.
-    """
+    """Two passes: resolve every down/up pair or scroll tick into an `_Action`, then sort by start (press) time
+    -- not close time, so an overlapping tap mid-hold doesn't reorder before the key it overlapped -- and emit,
+    inserting a Delay for any real gap. Can't represent true concurrency: overlapping holds still serialize."""
     actions: List[_Action] = []
     open_keys: Dict[int, Tuple[float, str]] = {}  # vk_code -> (down_time, name)
     open_mouse: Dict[MouseButton, float] = {}  # button -> down_time
@@ -297,17 +238,12 @@ def _convert_events(events: List[_RawEvent], stop_time: float) -> List[RecordedS
                 )
             )
 
-    # Anything still open when recording stopped: close it as a hold ending
-    # at stop_time, so a key/button still physically held when Stop was
-    # pressed still round-trips instead of being silently dropped.
+    # Anything still open when recording stopped: close it as a hold ending at stop_time.
     for vk, (down_t, name) in open_keys.items():
         build_key_action(vk, name, down_t, stop_time)
     for button, down_t in open_mouse.items():
         if button == MouseButton.LEFT:
-            # Discard, don't close-as-hold: an open LEFT press here can only
-            # be the same click that triggered stop() on the Stop button
-            # (see panels/macros.py). Right/Middle/X1/X2 and all keys are
-            # real holds and still close normally.
+            # Discard, don't close-as-hold: an open LEFT press here is the same click that triggered stop().
             continue
         build_mouse_action(button, down_t, stop_time)
 

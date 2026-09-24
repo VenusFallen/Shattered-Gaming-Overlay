@@ -1,6 +1,4 @@
 VERSION = "1.6.2"
 
-# Shared with main.py (sets the OS window title) and titlebar.py (looks the
-# window up by this exact title via ctypes/FindWindowW as a fallback path),
-# so the two can never drift out of sync.
+# Shared with main.py (window title) and titlebar.py (FindWindowW lookup) to keep them in sync.
 WINDOW_TITLE = f"Shattered Gaming Overlay  v{VERSION}"

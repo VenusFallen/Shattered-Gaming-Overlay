@@ -1,14 +1,6 @@
-"""settings_store.py -- save/load global app preferences to settings.json
-under %LOCALAPPDATA% (see SETTINGS_FILE's own comment for why).
-
-Deliberately separate from profiles.py: `AppState.settings` (theme, reduce
-motion, Color Cycle config, update-check opt-in, titlebar close behavior)
-must stay identical regardless of active profile, so it's never part of a
-`ProfileDef`'s payload and profiles.py never touches this file.
-
-Same disk-I/O shape as profiles.py (`_read_disk`/`_write_disk`: best-effort,
-atomic tmp-file replace, never raises into the caller) -- not shared code
-since the two files serialize different data, but kept identical in spirit.
+"""Save/load global app preferences to settings.json under %LOCALAPPDATA%. Deliberately separate from
+profiles.py: `AppState.settings` must stay identical regardless of active profile, so it's never part of
+a `ProfileDef` payload. Same disk-I/O shape as profiles.py (best-effort, atomic tmp-file replace).
 """
 
 from __future__ import annotations
@@ -21,9 +13,7 @@ from typing import Tuple
 
 from app_state import AppState
 
-# NOT Path(__file__).resolve().parent -- see profiles.py's PROFILES_FILE
-# comment. Same %LOCALAPPDATA% location updater.py's _log_dir() and
-# profiles.py's PROFILES_FILE already use.
+# Same %LOCALAPPDATA% location updater.py/profiles.py already use -- see profiles.py's PROFILES_FILE comment for why not Path(__file__).
 SETTINGS_FILE = Path(os.getenv("LOCALAPPDATA") or tempfile.gettempdir()) / "Shattered Gaming Overlay" / "settings.json"
 
 RGBA = Tuple[float, float, float, float]
@@ -37,9 +27,7 @@ def _read_disk() -> dict:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
-        # Corrupt/unreadable file -- fall back to defaults rather than
-        # crash the whole app on startup, same reasoning as profiles.py.
-        return {}
+        return {}  # corrupt/unreadable -- fall back to defaults rather than crash on startup
 
 
 def _write_disk(data: dict) -> None:
@@ -62,9 +50,7 @@ def _color_from_json(raw, fallback: RGBA) -> RGBA:
 
 
 def load(app_state: AppState) -> None:
-    """Call once at startup, right after `new_app_state()`. Only overwrites
-    the specific fields `save()` writes -- every other `SettingsState` field
-    stays whatever `new_app_state()` defaulted it to."""
+    """Call once at startup, right after `new_app_state()`. Only overwrites the specific fields `save()` writes."""
     data = _read_disk()
     if not data:
         return
@@ -88,13 +74,15 @@ def load(app_state: AppState) -> None:
         settings.close_minimizes_to_tray = bool(data["close_minimizes_to_tray"])
     if "auto_switch_profiles" in data:
         settings.auto_switch_profiles = bool(data["auto_switch_profiles"])
+    if "mouse_polling_rate_hz" in data:
+        try:
+            settings.mouse_polling_rate_hz = int(data["mouse_polling_rate_hz"])
+        except (TypeError, ValueError):
+            pass
 
 
 def save(app_state: AppState) -> None:
-    """Write the persist-worthy subset of `SettingsState` to disk.
-    Deliberately excludes the update-flow runtime fields (per-session state
-    owned by `updater.update_manager`) and `cycle_elapsed_sec` (an animation
-    clock that should always restart at 0, not resume after a relaunch)."""
+    """Write the persist-worthy subset of `SettingsState` to disk. Excludes update-flow runtime fields and `cycle_elapsed_sec` (an animation clock that should always restart at 0)."""
     settings = app_state.settings
     data = {
         "theme_name": settings.theme_name,
@@ -105,5 +93,6 @@ def save(app_state: AppState) -> None:
         "check_for_updates_on_launch": settings.check_for_updates_on_launch,
         "close_minimizes_to_tray": settings.close_minimizes_to_tray,
         "auto_switch_profiles": settings.auto_switch_profiles,
+        "mouse_polling_rate_hz": settings.mouse_polling_rate_hz,
     }
     _write_disk(data)

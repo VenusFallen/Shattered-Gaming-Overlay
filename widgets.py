@@ -29,21 +29,13 @@ def card(
     size: Optional[Tuple[float, float]] = None,
     hovered: bool = False,
 ) -> Iterator[bool]:
-    """A rounded, subtly translucent panel surface ('glass card').
-
-    Usage:
-        with widgets.card(theme, "remap-list") as visible:
-            if visible:
-                ... draw widgets ...
-    """
+    # A rounded, subtly translucent panel surface ('glass card'). Use as `with widgets.card(theme, id) as visible:`.
     bg = theme.bg_card_hover if hovered else theme.bg_card
     imgui.push_style_color(imgui.Col_.child_bg, bg)
     imgui.push_style_color(imgui.Col_.border, theme.border)
     size_v = imgui.ImVec2(*size) if size else imgui.ImVec2(0, 0)
     child_flags = imgui.ChildFlags_.borders | imgui.ChildFlags_.always_use_window_padding
-    # size.y == 0 means "fill remaining parent space" in plain BeginChild, not
-    # "auto-size to content" -- without auto_resize_y a single-row card
-    # stretches to fill the rest of its parent and forces a spurious scrollbar.
+    # size.y == 0 means "fill remaining parent space" in plain BeginChild -- auto_resize_y makes it "auto-size to content" instead.
     if size_v.y == 0:
         child_flags |= imgui.ChildFlags_.auto_resize_y
     visible = imgui.begin_child(str_id, size_v, child_flags)
@@ -76,10 +68,7 @@ _STATUS_ICONS = {
 
 
 def status_badge(theme: Theme, level: str, label: str) -> None:
-    """Render an icon+text status badge. `level` in
-    {"ok", "warn", "error", "info", "neutral"}. Color reinforces the icon
-    and label -- it never stands alone as the only way to tell states apart.
-    """
+    # Icon + text; color reinforces but never stands alone as the only way to tell states apart.
     color_map = {
         "ok": theme.success,
         "warn": theme.warning,
@@ -104,12 +93,8 @@ def labeled_toggle(
     reduce_motion: bool = False,
     tooltip: Optional[str] = None,
 ) -> Tuple[bool, bool]:
-    """Draw `[toggle switch]  Label` and return (changed, new_value). State
-    is conveyed by knob position plus the text label, never color alone.
-    """
-    # imgui_toggle.ToggleConstants isn't exported at runtime despite being in
-    # the .pyi stub -- 0.1s is its documented default, inlined since it can't
-    # be imported.
+    # Draws `[toggle switch]  Label`; state is conveyed by knob position plus the label, never color alone.
+    # imgui_toggle.ToggleConstants isn't exported at runtime despite being in the .pyi stub -- 0.1s is its documented default.
     _DEFAULT_ANIMATION_DURATION = 0.1
 
     flags = imgui_toggle.ToggleFlags_.none
@@ -135,20 +120,9 @@ def labeled_toggle(
 def hex_color_picker(
     theme: Theme, str_id: str, label: str, rgba: Tuple[float, float, float, float]
 ) -> Tuple[bool, Tuple[float, float, float, float], bool]:
-    """A themed color swatch + label; clicking it opens a popup with one
-    visual picker and a hex field -- deliberately no RGB sliders or alpha
-    control, and an explicit Close button since the default popup only
-    dismisses on an outside click.
-
-    Still passes/returns a 4-tuple (alpha forced to 1.0) so existing
-    RGBA-typed consumers don't need to change.
-
-    Returns (changed, rgba, committed). `changed` fires every dragged frame
-    (color_picker3's own `picked` flag); `committed` fires once, on release
-    (is_item_deactivated_after_edit()) -- must be checked right after
-    color_picker3, since the Close button drawn after it becomes the "last
-    item" otherwise.
-    """
+    # Swatch + label opening a hex-only popup with an explicit Close button (deliberately no RGB sliders/alpha).
+    # Returns (changed, rgba, committed); `committed` (deactivated-after-edit) must be read right after color_picker3,
+    # before the Close button becomes the new "last item".
     imgui.push_id(str_id)
     swatch_col = imgui.ImVec4(rgba[0], rgba[1], rgba[2], 1.0)
     if imgui.color_button("##swatch", swatch_col, imgui.ColorEditFlags_.no_alpha, imgui.ImVec2(28, 20)):
@@ -272,23 +246,8 @@ def screen_position_picker(
 
 
 def right_pinned_cursor_x(margin: float = 40.0) -> float:
-    """Cursor X for a trailing right-aligned control (typically a row's
-    delete button): `margin` px from the container's right edge, UNLESS the
-    natural same_line() flow position is already further right than that --
-    in which case flow wins.
-
-    A row's preceding widgets don't always have a fixed width -- a
-    bind_button's capturing-state label ("Press a key... (Esc to cancel)")
-    or a long user-typed name can run wider than usual. Snapping a trailing
-    button to a fixed X unconditionally would draw it ON TOP of that
-    overflow instead of past it, which is worse than the original bug this
-    pattern replaces (a same_line()-chained button just clipping off the
-    card's visible edge, since these cards have no horizontal scrollbar) --
-    unpredictable click targeting between two stacked controls, rather than
-    one control simply being off-screen. This doesn't eliminate the
-    off-screen case, it only guarantees the button is never drawn under
-    something else; call `imgui.same_line()` first, same as any other
-    trailing item, then `imgui.set_cursor_pos_x(right_pinned_cursor_x())`."""
+    # `margin` px from the container's right edge, unless same_line() flow already sits further right -- flow wins,
+    # so an overlong preceding widget (e.g. a mid-capture bind_button label) never gets drawn on top of by this one.
     return max(imgui.get_window_width() - margin, imgui.get_cursor_pos_x())
 
 
@@ -298,12 +257,7 @@ def right_pinned_cursor_x(margin: float = 40.0) -> float:
 
 
 def hyperlink(theme: Theme, label: str, url: str) -> None:
-    """Render `label` as a clickable hyperlink (accent color, hand cursor,
-    underline on hover) opening `url` in the OS browser. No native hyperlink
-    widget exists here, so this is a Selectable sized to its text (an
-    explicit width, not -1 -- see the imgui.selectable gotcha) re-themed to
-    read as a link.
-    """
+    # A Selectable sized to its own text (explicit width, not -1 -- see the imgui.selectable gotcha) re-themed as a link.
     text_width = imgui.calc_text_size(label).x
     imgui.push_style_color(imgui.Col_.text, theme.accent_text)
     imgui.push_style_color(imgui.Col_.header, (0.0, 0.0, 0.0, 0.0))
@@ -327,13 +281,7 @@ def hyperlink(theme: Theme, label: str, url: str) -> None:
 
 
 def bind_button(theme: Theme, str_id: str, display_name: str, capturing: bool) -> bool:
-    """A button that shows the current bind, or a distinct "listening" state
-    while capturing. Returns True if clicked (caller starts/owns capture).
-
-    The "listening" state is communicated via icon + text change, not color
-    alone, so it reads correctly even for a user who can't distinguish the
-    accent color from the default button color.
-    """
+    # Shows the current bind or a "listening" state (icon + text change, not color alone). Returns True if clicked.
     imgui.push_id(str_id)
     if capturing:
         imgui.push_style_color(imgui.Col_.button, theme.accent_active)

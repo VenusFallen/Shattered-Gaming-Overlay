@@ -64,11 +64,7 @@ _IID_IDXGIDevice = _guid("{54ec77fa-1377-44e6-8c32-88fd5f44c84c}")
 
 
 def _com(ptr: int, idx: int, res_type, arg_types: list, *args):
-    """Call the COM vtable method at index *idx* on the object at *ptr*.
-
-    ptr -- raw integer value of an interface pointer
-    idx -- zero-based vtable slot index
-    """
+    # Call the COM vtable method at zero-based slot *idx* on the interface pointer *ptr*.
     if not ptr:
         raise ValueError(f"_com called with null pointer (slot {idx})")
     vtbl = c_void_p.from_address(ptr).value
@@ -147,12 +143,7 @@ class D3D11Viewport(Structure):
 
 
 def create_device() -> tuple[int, int]:
-    """Create a hardware D3D11 device + immediate context (no swap chain).
-
-    BGRA_SUPPORT flag is set -- required for B8G8R8A8 render targets used by
-    DComp. Returns (ID3D11Device*, ID3D11DeviceContext*) as raw integer
-    pointers.
-    """
+    # Hardware D3D11 device + immediate context (no swap chain). BGRA_SUPPORT is required for DComp's B8G8R8A8 targets.
     _CreateDevice = _d3d11.D3D11CreateDevice
     _CreateDevice.restype = c_int
     _CreateDevice.argtypes = [
@@ -192,14 +183,7 @@ _CreateDXGIFactory2.argtypes = [c_uint, POINTER(GUID), POINTER(c_void_p)]
 
 
 def get_factory2() -> int:
-    """Create an IDXGIFactory2 directly via CreateDXGIFactory2 (DXGI 1.3,
-    Windows 8.1+). Returns IDXGIFactory2* (caller must Release).
-
-    Simpler and more reliable than walking device -> IDXGIDevice -> adapter
-    -> GetParent. D3D_DRIVER_TYPE_HARDWARE always uses adapter 0, which
-    CreateDXGIFactory2 also enumerates first -- no adapter mismatch on
-    single-GPU systems.
-    """
+    # Simpler/more reliable than walking device -> IDXGIDevice -> adapter -> GetParent; caller must Release.
     factory = c_void_p(None)
     hr = _CreateDXGIFactory2(0, byref(_IID_IDXGIFactory2), byref(factory))
     _check(hr, "CreateDXGIFactory2")
@@ -207,11 +191,7 @@ def get_factory2() -> int:
 
 
 def create_swap_chain_for_composition(factory2: int, device: int, width: int, height: int) -> int:
-    """Create a flip-model swap chain suitable for DirectComposition.
-
-    Format: B8G8R8A8_UNORM, premultiplied alpha, FLIP_DISCARD, 2 buffers.
-    Returns IDXGISwapChain1* (caller must Release).
-    """
+    # Flip-model swap chain for DirectComposition: B8G8R8A8_UNORM, premultiplied alpha, FLIP_DISCARD, 2 buffers.
     desc = SwapChainDesc1()
     desc.Width = width
     desc.Height = height
@@ -225,14 +205,7 @@ def create_swap_chain_for_composition(factory2: int, device: int, width: int, he
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD
     desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED
     desc.Flags = 0
-    # IDXGIFactory2::CreateSwapChainForComposition -- vtable slot 24
-    # IUnknown(0-2) + IDXGIObject(3-6) + IDXGIFactory(7-11) + IDXGIFactory1(12-13)
-    # + IDXGIFactory2 own methods (14-24): IsWindowedStereoEnabled(14),
-    # CreateSwapChainForHwnd(15), CreateSwapChainForCoreWindow(16),
-    # GetSharedResourceAdapterLuid(17), RegisterStereoStatusWindow(18),
-    # RegisterStereoStatusEvent(19), UnregisterStereoStatus(20),
-    # RegisterOcclusionStatusWindow(21), RegisterOcclusionStatusEvent(22),
-    # UnregisterOcclusionStatus(23), CreateSwapChainForComposition(24)
+    # IDXGIFactory2::CreateSwapChainForComposition -- vtable slot 24 (IUnknown/IDXGIObject/IDXGIFactory/IDXGIFactory1 + own methods).
     swap_chain = c_void_p(None)
     hr = _com(
         factory2, 24, c_int,

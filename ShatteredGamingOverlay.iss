@@ -1,38 +1,19 @@
-; Inno Setup script for Shattered Gaming Overlay. Installs to Program Files,
-; Start Menu shortcut. Matches updater.py's launch_installer_and_quit()
-; assumption that the installer is Inno-Setup-based and accepts /VERYSILENT
-; /SUPPRESSMSGBOXES /NORESTART /LOG=<path>.
+; Inno Setup script for Shattered Gaming Overlay. Installs to Program Files with a Start Menu
+; shortcut; matches updater.py's launch_installer_and_quit() silent-install flag assumptions.
 ;
-; No driver install/uninstall step: this project has no kernel driver (see
-; .claude\agents\engine-agent.md's hard rule). No LibreHardwareMonitor driver
-; step either -- stats_poller.py runs with IsRing0Enabled = False, so LHM
-; needs only its DLLs, shipped as plain data files via [Files] below.
+; No driver install step -- no kernel driver is bundled. LibreHardwareMonitor DLLs ship as plain
+; data files via [Files] below (stats_poller.py runs with IsRing0Enabled = False).
 ;
-; Both the installer and the app manifest as admin (PrivilegesRequired=admin
-; below, ShatteredGamingOverlay.spec's uac_admin=True). Admin is required
-; because stats_poller.py's FPS tracking (PresentMon, a real-time ETW trace
-; session) fails with "access denied" unless elevated; the whole app
-; requests admin at launch rather than self-elevating just PresentMon.
+; Installer and app both manifest as admin (PrivilegesRequired=admin below,
+; ShatteredGamingOverlay.spec's uac_admin=True) -- PresentMon's FPS tracking needs elevation.
 ;
-; A silent self-update used to auto-relaunch the app here (ssPostInstall).
-; Every attempt hit a "Failed to load Python DLL" bootloader crash across
-; many rounds of live testing (2026-08-30) that survived every fix tried --
-; relaunch-check accuracy, ShellExec vs Exec, Defender exclusions including
-; Block-At-First-Sight, stripping a stale _MEIPASS2, a fixed inspectable
-; runtime_tmpdir. Tabled rather than sunk further time into it: a silent
-; update now just tells the user to restart the app themselves instead of
-; fighting the crash.
+; Silent self-update no longer auto-relaunches the app (see NotifyManualRelaunchNeeded below) --
+; just tells the user to restart it themselves.
 ;
-; No AppMutex set: main.py doesn't hold a named mutex for CloseApplications
-; to target (that would be an application-logic change, out of scope here --
-; see updater.py's module docstring). CloseApplications=yes is still set
-; below without one -- Inno's Restart Manager also detects processes locking
-; the file being replaced (ShatteredGamingOverlay.exe), so this remains a
-; useful defense-in-depth layer on top of updater.py's Wait-Process watcher,
-; which is the primary mechanism closing the race.
+; No AppMutex set -- CloseApplications=yes still helps via Inno's Restart Manager detecting the
+; locked exe, as defense-in-depth on top of updater.py's Wait-Process watcher.
 
-; Passed in by build.bat via /DMyAppVersion so this can't drift from
-; version.py. Fallback only matters if ISCC runs outside build.bat.
+; Passed in by build.bat via /DMyAppVersion so this can't drift from version.py.
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0-dev"
 #endif
@@ -61,14 +42,7 @@ CloseApplications=yes
 RestartApplications=no
 
 [InstallDelete]
-; Cleans up the orphaned per-version settings ini files every past release
-; left behind (Hello ImGui derived the ini name from the version-embedded
-; window title before main.py started pinning it to ShatteredGamingOverlay.ini
-; -- see that fix's commit). Pattern matches only the old
-; Shattered_Gaming_Overlay__v<ver>.ini naming (spaces/dots sanitized to
-; underscores by Hello ImGui); the current stable ShatteredGamingOverlay.ini
-; doesn't match it, so a real user's live settings are never touched. Runs on
-; every install (fresh or update), harmless when there's nothing to delete.
+; Cleans up orphaned per-version settings ini files from old releases; current ShatteredGamingOverlay.ini doesn't match this pattern, so live settings are never touched.
 Type: files; Name: "{app}\Shattered_Gaming_Overlay__v*.ini"
 
 [Files]

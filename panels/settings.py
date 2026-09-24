@@ -1,12 +1,6 @@
 """panels/settings.py -- Settings panel: theme, reduce motion, Target Window
-(panels/window_select.py's card), and Updates. Theme/reduce-motion are fully
-live via theme.apply_theme, called every frame from shell.py.
-
-Updates: `_render_updates` only reads `ctx.state.settings.update_*` (written
-by `updater.update_manager.sync_to()` from main.py) and issues commands via
-`updater.update_manager`, never touching its internals directly.
-`render_auto_update_prompt` is the check-on-launch popup, called
-unconditionally every frame from shell.py regardless of active panel.
+(panels/window_select.py's card), and Updates. Reads/writes `updater.update_manager`
+state but never touches its internals directly.
 """
 
 from __future__ import annotations
@@ -58,16 +52,11 @@ def _theme_swatches(name: str, t: theme_module.Theme) -> list:
 
 
 def _theme_picker(theme: theme_module.Theme, current: str) -> str:
-    """Horizontal row of theme cards, each showing a strip of that theme's
-    own palette swatches (background, accent, accent_active, text) with the
-    display name below. Color Cycle's card uses a live animated rainbow
-    instead of fixed swatches, signaling that it's dynamic."""
+    # Row of theme cards, each showing its own palette swatches; Color Cycle's card animates instead of using fixed swatches.
     new_name = current
     draw_list = imgui.get_window_draw_list()
     u32 = lambda rgba: imgui.color_convert_float4_to_u32(imgui.ImVec4(*rgba))  # noqa: E731
-    # push_text_wrap_pos takes a window-local x, not screen-space -- every
-    # wrap-pos call below must subtract this since the rest of the function
-    # works in screen space.
+    # push_text_wrap_pos takes a window-local x, not screen-space -- every wrap-pos call below must subtract this.
     window_x = imgui.get_window_pos().x
 
     names = theme_module.theme_names()
@@ -173,6 +162,31 @@ def _render_appearance(ctx: PanelContext) -> None:
             tooltip="Disables toggle-switch animation and other future motion effects.",
         )
         if changed:
+            settings_store.save(ctx.state)
+
+
+_POLLING_RATES_HZ = (125, 250, 500, 1000, 2000, 4000, 8000)
+
+
+def _render_mouse(ctx: PanelContext) -> None:
+    theme = ctx.theme
+    settings = ctx.state.settings
+    with widgets.card(theme, "settings-mouse", size=(0, 0)):
+        widgets.section_title("Mouse")
+        labels = [f"{hz} Hz" for hz in _POLLING_RATES_HZ]
+        try:
+            idx = _POLLING_RATES_HZ.index(settings.mouse_polling_rate_hz)
+        except ValueError:
+            idx = _POLLING_RATES_HZ.index(1000)
+        imgui.set_next_item_width(160)
+        changed, idx = imgui.combo("Polling rate", idx, labels)
+        if imgui.is_item_hovered():
+            imgui.set_tooltip(
+                "Your physical mouse's own polling rate (check its manufacturer software or spec sheet). "
+                "Used to time Macro's Move To and Move By steps, which always move in small steps rather than an instant jump."
+            )
+        if changed:
+            settings.mouse_polling_rate_hz = _POLLING_RATES_HZ[idx]
             settings_store.save(ctx.state)
 
 
@@ -287,10 +301,7 @@ def _render_updates(ctx: PanelContext) -> None:
 
 
 def render_auto_update_prompt(ctx: PanelContext) -> None:
-    """Check-on-launch prompt: "vX is available. Update now?" with
-    Update Now / Later -- Later skips it for the session without disabling
-    the setting. Call once per frame regardless of active panel.
-    """
+    # Check-on-launch prompt; Later skips it for the session without disabling the setting. Call once per frame.
     theme = ctx.theme
     settings = ctx.state.settings
 
@@ -316,12 +327,7 @@ def render_auto_update_prompt(ctx: PanelContext) -> None:
 
 
 def render_update_flow_popup(ctx: PanelContext) -> None:
-    """Global modal covering the rest of the update flow once a download has
-    started -- DOWNLOADING -> READY -> INSTALLING -- regardless of active
-    panel, so switching away from Settings mid-update doesn't strand the
-    user. Driven off `settings.update_status` (_UPDATE_FLOW_STATUSES), so it
-    covers both the auto-prompt and the Settings card's own button.
-    """
+    # Global modal for DOWNLOADING -> READY -> INSTALLING, so leaving Settings mid-update doesn't strand the user.
     theme = ctx.theme
     settings = ctx.state.settings
     active = settings.update_status in _UPDATE_FLOW_STATUSES
@@ -361,6 +367,8 @@ def render(ctx: PanelContext) -> None:
     imgui.spacing()
 
     _render_appearance(ctx)
+    imgui.spacing()
+    _render_mouse(ctx)
     imgui.spacing()
     window_select.render_section(ctx)
     imgui.spacing()

@@ -1,12 +1,6 @@
-"""tests/test_stats_percentile_lows.py -- unit coverage for stats_poller's
-1%/0.1% frame-time-low calc (_percentile_low_fps) and the larger history
-buffer feeding it (_FpsTracker.get_percentile_lows/get_frame_time_history).
-
-Pure data logic only -- never spins up a real PresentMon subprocess or
-touches the filesystem; _FpsTracker's internal deques are populated directly
-so these tests don't depend on _read_loop's stdout-parsing thread at all.
-See test_profiles_auto_switch.py/test_profiles_share.py for this project's
-existing pytest conventions.
+"""Unit coverage for stats_poller's 1%/0.1% frame-time-low calc (_percentile_low_fps) and the larger history
+buffer feeding it (_FpsTracker.get_percentile_lows/get_frame_time_history). Pure data logic only -- never
+spins up a real PresentMon subprocess; _FpsTracker's internal deques are populated directly instead.
 """
 
 from __future__ import annotations
@@ -58,9 +52,7 @@ def test_percentile_low_0_1_pct_uses_the_slowest_tail():
 
 
 # ---------------------------------------------------------------------------
-# _FpsTracker.get_percentile_lows() / get_frame_time_history() -- the
-# tracker's read API, exercised by writing directly into its internal
-# deques rather than driving a real PresentMon subprocess.
+# _FpsTracker.get_percentile_lows() / get_frame_time_history() -- exercised by writing directly into its internal deques rather than driving a real PresentMon subprocess.
 # ---------------------------------------------------------------------------
 
 

@@ -1,16 +1,7 @@
-"""tests/test_profiles_share.py -- unit coverage for the profile export/
-import data logic in profiles.py (see that module's "Export / Import"
-section).
-
-Covers only the pure data functions: building an exportable payload,
-parsing/validating an imported JSON blob, and the name-collision-suffix
-logic. The native Open/Save file dialogs in file_dialog.py are NOT covered
-here -- they're blocking native Win32 modal UI with nothing to unit test;
-that needs live/visual verification instead.
-
-Deliberately monkeypatches profiles.PROFILES_FILE per-test (via the
-autouse fixture below) so `_write_all()`'s real disk write never touches
-the actual %LOCALAPPDATA%/profiles.json on the machine running these tests.
+"""Unit coverage for the profile export/import data logic in profiles.py: building an exportable payload,
+parsing/validating an imported JSON blob, and the name-collision-suffix logic. The native Open/Save file
+dialogs in file_dialog.py are NOT covered here -- blocking native Win32 modal UI needs live/visual
+verification instead. Monkeypatches profiles.PROFILES_FILE so `_write_all()` never touches the real file.
 """
 
 from __future__ import annotations

@@ -1,18 +1,11 @@
 @echo off
 setlocal
 
-rem Build script for Shattered Gaming Overlay: PyInstaller build, Inno Setup
-rem compile, and release-zip packaging.
-rem
-rem Build requirements: pip install pyinstaller (see requirements.txt for
-rem the rest -- psutil, pywin32, imgui-bundle, requests, pythonnet).
-rem Also requires Inno Setup 6 (ISCC.exe) for step 2.
-rem
-rem Run this from the project root (the directory containing this file).
+rem Build script for Shattered Gaming Overlay: PyInstaller build, Inno Setup compile, release zip.
+rem Requires: pip install pyinstaller (see requirements.txt) and Inno Setup 6 (ISCC.exe).
+rem Run from the project root.
 
-rem Read VERSION once, up front -- used for the ISCC /D define (keeps
-rem ShatteredGamingOverlay.iss's AppVersion in sync with version.py) and
-rem for the release zip name in Step 3.
+rem Read VERSION once, up front -- keeps the ISCC /D define and release zip name in sync with version.py.
 for /f "usebackq tokens=*" %%v in (`python -c "import version; print(version.VERSION)"`) do set SGO_VERSION=%%v
 if "%SGO_VERSION%"=="" (
     echo ERROR: could not read VERSION from version.py

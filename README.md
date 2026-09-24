@@ -1,6 +1,6 @@
 # Shattered Gaming Overlay
 
-A gaming accessibility companion for Windows — remap keys and mouse buttons, build macros, run a live stats/crosshair overlay, and switch configs per game. No kernel driver, no virtual controller, no reading game memory. Just user-mode Win32 input APIs, the same layer AutoHotkey runs on.
+A gaming accessibility companion for Windows — remap keys and mouse buttons, build macros, run a live stats/crosshair overlay, switch configs per game, and play imported sounds on a hotkey. No kernel driver, no virtual controller, no reading game memory. Just user-mode Win32 input APIs, the same layer AutoHotkey runs on.
 
 ![Dashboard](assets/screenshots/dashboard.png)
 

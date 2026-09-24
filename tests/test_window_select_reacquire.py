@@ -1,20 +1,7 @@
-"""tests/test_window_select_reacquire.py -- coverage for
-window_select.py's `_reacquire_selected_if_stale()`, which keeps a selected
-Window Select target working across that process's own restarts for as long
-as the app stays running.
-
-Found live 2026-09-15: a profile's saved Window Select target only self-
-healed (via profiles.py's own restore-time `_resolve_window_select_target()`)
-if the target game was already running the moment the profile loaded. If
-the app booted (or a profile loaded) before the game did, the stale pid
-never recovered without a manual reselect through Settings, defeating a big
-part of the point of persisting a Window Select target across sessions.
-`_reacquire_selected_if_stale()` closes that gap by re-checking on every
-ambient enumeration refresh, not just once at load time.
-
-Never makes a real Win32 EnumWindows call -- `enumerate_target_windows()`
-is monkeypatched in every test that exercises `force_refresh()`/
-`refresh_if_stale()`.
+"""Coverage for window_select.py's `_reacquire_selected_if_stale()`, which keeps a selected Window Select
+target working across that process's own restarts by re-checking on every ambient enumeration refresh,
+not just once at profile-load time. Never makes a real Win32 EnumWindows call -- `enumerate_target_windows()`
+is monkeypatched wherever `force_refresh()`/`refresh_if_stale()` is exercised.
 """
 
 from __future__ import annotations

@@ -1,36 +1,8 @@
-"""stats_poller.py -- background hardware-stats + FPS polling, feeding the
-Stats HUD (CPU/GPU usage & temp, VRAM, RAM, FPS, 1%/0.1% frame-time lows,
-and a short recent-frame-time history for the HUD's live graph).
-
-Hard-rule compliance:
-- LibreHardwareMonitorLib (bundled unmodified in lib/, MPL 2.0) is opened
-  with `Computer.IsRing0Enabled = False`. LHM can install a kernel driver
-  for raw MSR/PCI sensor access, but only if Ring0 is enabled -- leaving it
-  False trades away a handful of sensors (some CPU temps) for staying
-  inside the project's absolute no-kernel-driver rule. Do not flip this.
-- PresentMon (bundled unmodified in presentmon/, MIT) reads frame-present
-  timing passively via Windows' ETW tracing. No DLL injection, no writes
-  into the target game process.
-- This module never touches input (no SendInput, no hooks) -- pure
-  sensor/telemetry polling, no target-process memory access.
-
-FPS tracking reuses `window_select.foreground_pid()` and always follows the
-real OS foreground window, deliberately NOT gated by the window-select
-process filter (that filter only gates Remapper/Macro engine
-matching/injection, never this read-only observer).
-
-`StatsPoller.start()`/`.stop()` run/tear down a single background daemon
-thread. Each poll tick builds a brand-new `StatsSnapshot` and publishes it
-under `self._lock`; callers pull the latest via `get_snapshot()`
-(thread-safe, cheap, never blocks on I/O). Snapshots are never mutated in
-place -- each tick replaces the whole object.
-
-If `pythonnet` isn't installed or LibreHardwareMonitorLib.dll can't be
-loaded, `lhm_available()` returns False and `start()` is a no-op that
-publishes `available=False` with a human-readable `error` -- never raises.
-Same for PresentMon: if missing or fails to launch, `fps` stays None and
-`fps_error` explains why, without affecting the CPU/GPU/RAM side of the
-snapshot -- the two subsystems fail independently.
+"""Background hardware-stats + FPS polling, feeding the Stats HUD (CPU/GPU usage & temp, VRAM, RAM, FPS,
+1%/0.1% frame-time lows, recent-frame-time history for the live graph). LibreHardwareMonitor is opened with
+Ring0 disabled (no kernel driver); PresentMon reads frame timing passively via ETW -- no game-process writes
+or injection either way. FPS tracking follows real OS foreground focus, NOT gated by the window-select
+process filter (that only gates Remapper/Macro matching/injection).
 """
 
 from __future__ import annotations
@@ -60,44 +32,25 @@ _bootstrap_error: Optional[str] = None
 # PresentMon / FPS tracking
 # ---------------------------------------------------------------------------
 _FPS_ROLLING_WINDOW = 30    # frames averaged for the smoothed FPS value
-# PresentMon's stdout isn't a real console when piped, so its C runtime
-# switches to block-buffered output -- samples arrive in lumpy bursts (worst
-# observed gap ~6s on a steady 60fps game) rather than a steady stream. 10s
-# gives margin above the worst ordinary gap without masking a genuine
-# failure (crash, game exit) for long.
+# PresentMon's piped stdout is block-buffered, so samples arrive in lumpy bursts (worst observed gap ~6s
+# on a steady 60fps game); 10s gives margin above that without masking a genuine crash/exit for long.
 _FPS_STALE_SEC = 10.0       # no fresh sample in this long -> report no FPS
-# Right after start()/retarget, a single slow sample (a real dropped frame)
-# can dominate a tiny window's median even though it can't touch a full
-# 30-sample one. Hold at "no data" until enough samples exist.
-_FPS_MIN_SAMPLES = 10
+_FPS_MIN_SAMPLES = 10       # below this, a single slow sample could dominate the rolling median -- hold at "no data"
 _PID_DEBOUNCE_SEC = 0.75    # foreground pid must be stable this long before retargeting
 
-# _FPS_ROLLING_WINDOW (30) is sized purely for a responsive, outlier-resistant
-# *median* -- nowhere near enough for a real 1%/0.1% low. A 0.1% low needs a
-# real sample in the bottom 0.1% of the window to mean anything; a 30-sample
-# window's bottom 0.1% is a fraction of one sample. Rather than blow up the
-# median window's responsiveness by growing it, _FpsTracker keeps a second,
-# much larger buffer (_history) dedicated to percentile-low calc + the HUD
-# graph. 4000 samples puts 4 real samples in the bottom 0.1% bucket (40 in
-# the bottom 1%) -- an actual small average, not one noisy spike -- while
-# still being a live rolling window (not "since start of session").
+# 30 samples is enough for a responsive median but far too few for a meaningful 1%/0.1% low, so a second,
+# much larger buffer (_history) is kept just for percentile-low calc + the HUD graph. 4000 puts 4 real
+# samples in the bottom 0.1% bucket (40 in the bottom 1%) while still being a live rolling window.
 _FPS_HISTORY_WINDOW = 4000
-# Below this many history samples, a 0.1%-low bucket would round to a single
-# sample -- report "no data" rather than a number that's really just "the
-# single worst frame so far".
-_FPS_PERCENTILE_MIN_SAMPLES = 300
-# Points fed to the HUD's live graph -- a glance-sized recent window, not the
-# full percentile history. Kept modest since it's redrawn (a handful of
-# draw_line calls) every overlay frame.
-_FPS_GRAPH_POINTS = 90
+_FPS_PERCENTILE_MIN_SAMPLES = 300  # below this, a 0.1%-low bucket would round to a single sample
+_FPS_GRAPH_POINTS = 90  # glance-sized recent window for the HUD's live graph, not the full percentile history
 
 _pm_missing_warned = False       # log "binary not found" only once per session
 _pm_launch_failed_warned = False  # log "failed to launch" only once per session
 
 
 def _presentmon_path() -> Path:
-    """Resolve presentmon/PresentMon.exe, same dev-mode vs. frozen
-    (sys._MEIPASS) resolution pattern `_bootstrap()` uses for lib/."""
+    """Resolve presentmon/PresentMon.exe, same dev-mode vs. frozen (sys._MEIPASS) pattern `_bootstrap()` uses for lib/."""
     try:
         if getattr(sys, "frozen", False):
             persistent = Path(sys.executable).parent / "presentmon"
@@ -133,15 +86,7 @@ def _warn_presentmon_launch_failed_once(exc: Exception) -> None:
 
 
 def _percentile_low_fps(ms_samples, fraction: float) -> Optional[float]:
-    """1%/0.1%-low, CapFrameX/MSI Afterburner style: not a percentile
-    *boundary* value -- the average frame time of the slowest `fraction`
-    share of samples (e.g. fraction=0.01 -> slowest 1%), converted to an
-    fps-equivalent number. `ms_samples` is msBetweenPresents values (higher
-    = slower = worse), so "slowest" is the largest values, not the smallest.
-
-    Pure function, no locking/threading concerns -- takes a plain sequence
-    so it's directly unit-testable without spinning up a real _FpsTracker.
-    """
+    """1%/0.1%-low, CapFrameX/MSI Afterburner style: the average frame time of the slowest `fraction` share of samples (not a percentile boundary), converted to fps. Pure function, unit-testable without a real _FpsTracker."""
     n = len(ms_samples)
     if n == 0:
         return None
@@ -154,27 +99,12 @@ def _percentile_low_fps(ms_samples, fraction: float) -> Optional[float]:
 
 
 class _FpsTracker:
-    """Owns one PresentMon subprocess targeting a single PID at a time.
-
-    Reads its live stdout CSV stream on a background thread, keeps a rolling
-    window of msBetweenPresents samples, and exposes a smoothed FPS value.
-    Fully self-contained: caller just calls start(pid, exe)/stop()/get_fps().
-
-    Two corrections over a naive "average the raw samples" approach:
-      - The first sample after every start()/restart is discarded -- a known
-        ETW artifact (PresentMon's timer for that row measures from
-        trace-session-start to first observed present, not between two real
-        frames), frequently an outlier with no relation to real frame pacing.
-      - get_fps() uses the MEDIAN of the rolling window, not the mean. Real
-        dropped-frame spikes (2x/3x/7x the steady interval) are common
-        enough that even one or two inside a 30-sample mean drag the
-        reported number down by more than half; a median shrugs them off.
-
-    Keeps a second, much larger sample buffer (`_history`, see
-    _FPS_HISTORY_WINDOW's comment) purely for 1%/0.1%-low calc and the HUD's
-    live graph -- `_samples`/get_fps() stays untouched and just as
-    responsive as before this feature existed.
-    """
+    """Owns one PresentMon subprocess targeting a single PID at a time. Reads its live stdout CSV stream on
+    a background thread, keeps a rolling window of msBetweenPresents samples, and exposes a smoothed FPS
+    value via start(pid, exe)/stop()/get_fps(). The first sample after every start()/restart is discarded
+    (a known ETW artifact, not a real frame interval), and get_fps() uses the MEDIAN of the window rather
+    than the mean so occasional dropped-frame spikes don't drag it down. A second, much larger buffer
+    (`_history`) is kept purely for 1%/0.1%-low calc and the HUD graph, leaving get_fps() just as responsive."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -224,11 +154,8 @@ class _FpsTracker:
         self._proc = None
         if proc is not None:
             try:
-                # Prefer a graceful CTRL_BREAK_EVENT over terminate()/kill():
-                # PresentMon's console control handler stops its ETW trace
-                # session cleanly on break, whereas TerminateProcess skips
-                # that handler and can leave the session orphaned (breaking
-                # the next launch until --stop_existing_session cleans it up).
+                # Graceful CTRL_BREAK_EVENT lets PresentMon's console handler stop its ETW session cleanly;
+                # TerminateProcess skips that handler and can orphan the session until the next --stop_existing_session.
                 proc.send_signal(signal.CTRL_BREAK_EVENT)
             except Exception:
                 try:
@@ -263,9 +190,7 @@ class _FpsTracker:
         return 1000.0 / median_ms
 
     def get_percentile_lows(self) -> Optional[Tuple[float, float]]:
-        """(1%-low fps, 0.1%-low fps) over the large `_history` window, or
-        None if there aren't enough samples yet for a meaningful 0.1%
-        bucket (see _FPS_PERCENTILE_MIN_SAMPLES) or the feed's gone stale."""
+        """(1%-low fps, 0.1%-low fps) over the large `_history` window, or None if not enough samples yet or the feed's gone stale."""
         with self._lock:
             if len(self._history) < _FPS_PERCENTILE_MIN_SAMPLES:
                 return None
@@ -279,10 +204,7 @@ class _FpsTracker:
         return low_1pct, low_0_1pct
 
     def get_frame_time_history(self, n: int = _FPS_GRAPH_POINTS) -> Tuple[float, ...]:
-        """Most recent up-to-`n` raw msBetweenPresents samples, oldest
-        first -- feeds the HUD's live graph. Cheap slice under the lock, no
-        computation. Stale-gated the same as get_fps()/get_percentile_lows()
-        so the graph doesn't keep showing dead data after the game exits."""
+        """Most recent up-to-`n` raw msBetweenPresents samples, oldest first, feeding the HUD's live graph; stale-gated so it doesn't show dead data after the game exits."""
         with self._lock:
             if not self._history:
                 return ()
@@ -320,10 +242,7 @@ class _FpsTracker:
                 if ms <= 0:
                     continue
                 with self._lock:
-                    # See class docstring -- the first row of a fresh
-                    # session measures from session-start to first present,
-                    # not between two real frames, and is discarded rather
-                    # than treated as a real sample.
+                    # First row of a fresh session measures session-start to first present, not a real frame interval -- discard it.
                     if self._skip_next_sample:
                         self._skip_next_sample = False
                         continue
@@ -341,10 +260,7 @@ class _FpsTracker:
 
 
 def _lib_dir() -> Path:
-    """Resolve lib/ using the same dev-mode vs. frozen resolution pattern as
-    `_presentmon_path()` -- persistent lib/ next to the exe wins if present
-    (allows dropping in newer DLLs without rebuilding), else the bundled
-    sys._MEIPASS copy."""
+    """Resolve lib/, same dev-mode vs. frozen pattern as `_presentmon_path()` -- persistent lib/ next to the exe wins if present, else the bundled sys._MEIPASS copy."""
     try:
         if getattr(sys, "frozen", False):
             persistent = Path(sys.executable).parent / "lib"
@@ -356,10 +272,7 @@ def _lib_dir() -> Path:
 
 
 def _bootstrap() -> None:
-    """Load pythonnet + LibreHardwareMonitorLib.dll. Sets `_lhm_available`
-    True only on full success; leaves `_bootstrap_error` set to a
-    human-readable reason on any failure. Never raises -- this runs at
-    import time."""
+    """Load pythonnet + LibreHardwareMonitorLib.dll. Sets `_lhm_available` True only on full success, else `_bootstrap_error`. Never raises -- runs at import time."""
     global _lhm_available, _Computer, _bootstrap_error
     lib_dir = _lib_dir()
 
@@ -370,9 +283,7 @@ def _bootstrap() -> None:
     if str(lib_dir) not in sys.path:
         sys.path.insert(0, str(lib_dir))
 
-    # Remove Zone.Identifier ADS on all DLLs -- Windows blocks files
-    # downloaded from the internet until unblocked. No-op if the stream
-    # doesn't exist.
+    # Remove Zone.Identifier ADS -- Windows blocks internet-downloaded files until unblocked; no-op if absent.
     try:
         import ctypes
         for dll in lib_dir.glob("*.dll"):
@@ -380,10 +291,8 @@ def _bootstrap() -> None:
     except Exception:
         pass
 
-    # Detect which .NET runtime the LHM DLL targets by scanning its binary.
-    # net472 builds contain b'.NETFramework'; .NET 8/9/10 builds (LHM 0.9.x
-    # targets .NET Standard 2.0) do not -- those need pythonnet's "coreclr"
-    # runtime, never "netfx", or the load silently fails downstream.
+    # Detect which .NET runtime the LHM DLL targets: net472 builds contain b'.NETFramework'; newer
+    # .NET Standard 2.0 builds don't and need pythonnet's "coreclr" runtime, not "netfx".
     runtime = "netfx"
     try:
         dll_bytes = (lib_dir / "LibreHardwareMonitorLib.dll").read_bytes()
@@ -410,9 +319,8 @@ def _bootstrap() -> None:
         import clr  # noqa: F401  (pip install "pythonnet>=3.0.0")
         from System.Reflection import Assembly as _Asm
 
-        # Load every support assembly by full file path, then the main lib
-        # last -- clr.AddReference silently fails to find LibreHardwareMonitorLib's
-        # dependencies unless each one has already been loaded this way first.
+        # Load every support assembly by full path first, then the main lib -- clr.AddReference silently
+        # fails to find LibreHardwareMonitorLib's dependencies unless each is already loaded this way.
         for dll in sorted(lib_dir.glob("*.dll")):
             if dll.stem == "LibreHardwareMonitorLib":
                 continue
@@ -445,26 +353,11 @@ def lhm_available() -> bool:
 
 @dataclass(frozen=True)
 class StatsSnapshot:
-    """Immutable per-tick result handed out by `StatsPoller.get_snapshot()`.
-
-    All numeric fields are Optional -- a field is only populated when the
-    corresponding sensor was actually found this tick (e.g. `gpu_temp` stays
-    None on AMD GPUs that expose no Temperature sensor at all; `cpu_temp`
-    skips a literal 0.0 reading, which LHM uses as an unreadable-sensor
-    sentinel on some AMD Ryzen CPUs).
-
-    `available`/`error` describe the CPU/GPU/RAM (LibreHardwareMonitor) side
-    only. `fps`/`fps_error` are independent -- FPS (PresentMon) can be
-    unavailable while CPU/GPU/RAM data is flowing fine, and vice versa.
-
-    `fps_1pct_low`/`fps_0_1pct_low` and `fps_frame_time_history` share
-    `fps`'s availability story but warm up separately (and later) --  they
-    need `_FPS_PERCENTILE_MIN_SAMPLES` samples in the tracker's larger
-    history window, not just `_FPS_MIN_SAMPLES`, so it's normal for `fps` to
-    be populated for a few seconds before these are. `fps_frame_time_history`
-    is raw msBetweenPresents samples (oldest first), not fps -- callers
-    convert if they want an fps-scale graph.
-    """
+    """Immutable per-tick result handed out by `StatsPoller.get_snapshot()`. All numeric fields are Optional,
+    populated only when the corresponding sensor was found this tick. `available`/`error` describe the
+    CPU/GPU/RAM (LHM) side only; `fps`/`fps_error` are independent, since PresentMon and LHM fail separately.
+    `fps_1pct_low`/`fps_0_1pct_low`/`fps_frame_time_history` warm up later than `fps` since they need more
+    samples; `fps_frame_time_history` is raw msBetweenPresents, not fps."""
 
     available: bool = False
     error: Optional[str] = None
@@ -491,20 +384,9 @@ _UNAVAILABLE_SNAPSHOT_ERROR = "LibreHardwareMonitor is unavailable"
 
 
 class StatsPoller:
-    """Background daemon thread that polls hardware stats + FPS every
-    `poll_interval_sec`, publishing a fresh `StatsSnapshot` each tick.
-
-        poller = StatsPoller(poll_interval_sec=1.0, track_fps=True)
-        poller.start()
-        ...
-        snap = poller.get_snapshot()
-        ...
-        poller.stop()
-
-    Safe to construct even when `lhm_available()` is False -- `start()`
-    simply publishes a permanent `available=False` snapshot and never spins
-    up a thread in that case.
-    """
+    """Background daemon thread that polls hardware stats + FPS every `poll_interval_sec`, publishing a
+    fresh `StatsSnapshot` each tick. Safe to construct even when `lhm_available()` is False -- `start()`
+    then just publishes a permanent `available=False` snapshot without spinning up a thread."""
 
     def __init__(self, poll_interval_sec: float = 1.0, track_fps: bool = True) -> None:
         self._poll_interval_sec = max(0.2, float(poll_interval_sec))
@@ -515,10 +397,7 @@ class StatsPoller:
         self._running = False
         self._thread: Optional[threading.Thread] = None
 
-        # FPS/PresentMon tracking state -- owned exclusively by the poll
-        # thread (created/torn down inside _poll_loop, never touched from
-        # another thread), so no extra locking needed beyond self._lock for
-        # publishing the resulting snapshot.
+        # FPS/PresentMon state -- owned exclusively by the poll thread, so no extra locking needed here.
         self._fps_tracker: Optional[_FpsTracker] = None
         self._fps_target_pid: Optional[int] = None
         self._fps_pending_pid: Optional[int] = None
@@ -574,12 +453,8 @@ class StatsPoller:
     def _poll_loop(self) -> None:
         try:
             comp = _Computer()
-            # Ring0 extracts/installs LHM's bundled WinRing0 kernel driver,
-            # which Microsoft's Vulnerable Driver Blocklist quarantines --
-            # disabling it trades away sensors needing raw MSR/PCI access
-            # (e.g. some CPU temps) for never creating that driver service.
-            # See module docstring's hard-rule-compliance section -- do not
-            # flip this to True.
+            # Ring0 would extract/install LHM's bundled WinRing0 kernel driver -- stays disabled, trading
+            # away a few raw-MSR/PCI sensors to keep the no-kernel-driver rule. Do not flip this to True.
             comp.IsRing0Enabled = False
             comp.IsCpuEnabled = True
             comp.IsGpuEnabled = True
@@ -639,10 +514,7 @@ class StatsPoller:
                 pass
 
     def _update_fps(self, data: dict) -> None:
-        """Track FPS of whichever window currently has real OS focus, via
-        `window_select.foreground_pid()`. Deliberately ignores any window
-        target filter -- see module docstring. Owned entirely by the poll
-        thread; no locking needed here."""
+        """Track FPS of whichever window currently has real OS focus; deliberately ignores the window-select target filter. Owned entirely by the poll thread; no locking needed here."""
         if not self._track_fps:
             if self._fps_tracker is not None:
                 self._fps_tracker.stop()
@@ -682,10 +554,7 @@ class StatsPoller:
         if not exe_path.exists():
             _warn_presentmon_missing_once(exe_path)
             self._fps_missing_error = f"PresentMon.exe not found at {exe_path}"
-            # Don't retry every debounce window once we know the binary is
-            # missing -- just remember this pid as "targeted" (a no-op
-            # tracker state) so we don't spam the missing-file check every
-            # poll tick.
+            # Remember this pid as "targeted" anyway so we don't re-check the missing binary every poll tick.
             self._fps_target_pid = pid
             return
         self._fps_missing_error = None
@@ -710,9 +579,7 @@ class StatsPoller:
                 if "Load" in st:
                     loads.append((s.Name, float(v)))
                 elif "Temperature" in st and float(v) > 0.0:
-                    # Skip 0.0 -- LHM uses it as a sentinel when the sensor
-                    # can't be read (e.g. AMD Ryzen's Core (Tctl/Tdie) on
-                    # some LHM versions).
+                    # Skip 0.0 -- LHM uses it as an unreadable-sensor sentinel on some AMD Ryzen CPUs.
                     temps.append((s.Name, float(v)))
             # Prefer "Total" load; fall back to first sensor.
             cpu_load = next(
@@ -751,9 +618,7 @@ class StatsPoller:
                 if "Load" in st:
                     loads.append((name, float(v)))
                 elif "Temperature" in st:
-                    # Some AMD GPUs expose no Temperature sensor at all --
-                    # only D3D usage. That's not an error: this loop simply
-                    # never appends anything and gpu_temp stays None below.
+                    # Some AMD GPUs expose no Temperature sensor at all -- gpu_temp just stays None below.
                     temps.append((name, float(v)))
                 elif "SmallData" in st:            # MB (VRAM)
                     if "Memory" in name and "Used" in name:

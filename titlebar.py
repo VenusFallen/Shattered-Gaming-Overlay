@@ -1,18 +1,8 @@
 """titlebar.py -- themed custom title bar for the borderless Companion window.
-
-main.py runs with `app_window_params.borderless = True`, which drops the OS
-title bar (drag region + min/max/close). This module rebuilds a themed
-replacement strip that shell.py renders at the top of every frame.
-
-`borderless_movable`/`_resizable`/`_closable` are all left False: Hello
-ImGui's generic drag/resize zones are unstyled, have no min/max affordance,
-and (resize specifically) had a real bug -- see `render_resize_grip()`'s
-docstring. Drag and resize are both hand-rolled instead via the Win32
-"release capture, send WM_NCLBUTTONDOWN/HT*" trick, and close/min/max are
-themed buttons instead of Hello ImGui's generic ones.
-
-imgui_bundle has no minimize/maximize/close call of its own; those go
-through raw Win32 `ShowWindow` via ctypes (same pattern as input_hooks.py).
+main.py runs with `app_window_params.borderless = True`, dropping the OS
+title bar; this module rebuilds a themed replacement, with drag/resize/
+minimize/maximize/close hand-rolled via raw Win32 calls instead of Hello
+ImGui's own borderless zones (see `render_resize_grip()` for why).
 """
 
 from __future__ import annotations
@@ -36,6 +26,32 @@ user32.IsZoomed.argtypes = (wintypes.HWND,)
 user32.ShowWindow.argtypes = (wintypes.HWND, ctypes.c_int)
 user32.ReleaseCapture.restype = wintypes.BOOL
 user32.SendMessageW.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+user32.GetWindowLongPtrW.restype = ctypes.c_longlong
+user32.GetWindowLongPtrW.argtypes = (wintypes.HWND, ctypes.c_int)
+user32.SetWindowLongPtrW.restype = ctypes.c_longlong
+user32.SetWindowLongPtrW.argtypes = (wintypes.HWND, ctypes.c_int, ctypes.c_longlong)
+user32.SetWindowPos.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.UINT)
+
+# comctl32's SetWindowSubclass, not a raw GWLP_WNDPROC swap -- lets us intercept one message (WM_NCCALCSIZE) on
+# a window GLFW owns and created, without touching or needing to save/restore GLFW's own window procedure;
+# everything we don't handle chains straight through via DefSubclassProc.
+comctl32 = ctypes.windll.comctl32
+_UINT_PTR = ctypes.c_size_t
+_DWORD_PTR = ctypes.c_size_t
+_LRESULT = ctypes.c_ssize_t
+_SUBCLASSPROC = ctypes.WINFUNCTYPE(_LRESULT, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, _UINT_PTR, _DWORD_PTR)
+comctl32.SetWindowSubclass.restype = wintypes.BOOL
+comctl32.SetWindowSubclass.argtypes = (wintypes.HWND, _SUBCLASSPROC, _UINT_PTR, _DWORD_PTR)
+comctl32.RemoveWindowSubclass.restype = wintypes.BOOL
+comctl32.RemoveWindowSubclass.argtypes = (wintypes.HWND, _SUBCLASSPROC, _UINT_PTR)
+comctl32.DefSubclassProc.restype = _LRESULT
+comctl32.DefSubclassProc.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
 
 _SW_HIDE = 0
 _SW_RESTORE = 9
@@ -44,6 +60,16 @@ _SW_MAXIMIZE = 3
 _WM_NCLBUTTONDOWN = 0x00A1
 _HTCAPTION = 2
 _HTBOTTOMRIGHT = 17
+_GWL_STYLE = -16
+_WS_THICKFRAME = 0x00040000
+_SWP_NOSIZE = 0x0001
+_SWP_NOMOVE = 0x0002
+_SWP_NOZORDER = 0x0004
+_SWP_NOACTIVATE = 0x0010
+_SWP_FRAMECHANGED = 0x0020
+_WM_NCCALCSIZE = 0x0083
+_WM_NCDESTROY = 0x0082
+_NCCALCSIZE_SUBCLASS_ID = 1
 
 BAR_HEIGHT_UNSCALED = 38.0
 _RESIZE_GRIP_SIZE = 16.0
@@ -62,6 +88,52 @@ def _hwnd() -> int:
 def _is_maximized() -> bool:
     hwnd = _hwnd()
     return bool(hwnd) and bool(user32.IsZoomed(hwnd))
+
+
+def ensure_resizable_frame_style() -> None:
+    """Call once at startup. GLFW creates this borderless window without WS_THICKFRAME (borderless_resizable=False
+    tells it not to add its own corner-resize handling), but our own WM_NCLBUTTONDOWN/HTBOTTOMRIGHT resize in
+    _start_native_resize() needs that style bit for DefWindowProc to actually enter a native sizing loop, not
+    just accept and immediately no-op the message. SetWindowPos with SWP_FRAMECHANGED afterward is required too --
+    changing GWL_STYLE alone doesn't make Windows recalculate non-client hit-testing to honor the new style."""
+    hwnd = _hwnd()
+    if not hwnd:
+        return
+    style = user32.GetWindowLongPtrW(hwnd, _GWL_STYLE)
+    if style & _WS_THICKFRAME:
+        return
+    user32.SetWindowLongPtrW(hwnd, _GWL_STYLE, style | _WS_THICKFRAME)
+    flags = _SWP_NOSIZE | _SWP_NOMOVE | _SWP_NOZORDER | _SWP_NOACTIVATE | _SWP_FRAMECHANGED
+    user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, flags)
+
+
+def _nccalcsize_subclass_proc(hwnd, msg, wparam, lparam, uid_subclass, ref_data):
+    # WM_NCCALCSIZE's lParam points to a RECT either way -- a bare RECT* when wParam is FALSE, or
+    # NCCALCSIZE_PARAMS* when TRUE, whose first field (rgrc[0]) is that same RECT at the same offset.
+    # Claiming the top 1px as non-client (instead of the zero-margin rect GLFW's own borderless handling
+    # would return) is what stops Windows 10/11's DWM from painting its thickframe accent line across the
+    # top of the client area -- a known quirk for WS_THICKFRAME windows with no declared non-client margin.
+    if msg == _WM_NCCALCSIZE and lparam:
+        rect = ctypes.cast(lparam, ctypes.POINTER(_RECT)).contents
+        rect.top += 1
+        return 0
+    if msg == _WM_NCDESTROY:
+        comctl32.RemoveWindowSubclass(hwnd, _nccalcsize_subclass_proc_ref, uid_subclass)
+    return comctl32.DefSubclassProc(hwnd, msg, wparam, lparam)
+
+
+# Kept alive for the process's lifetime -- ctypes callback objects that get garbage collected before Windows
+# is done calling them crash or corrupt memory, and this window (and its subclass) lives until the app exits.
+_nccalcsize_subclass_proc_ref = _SUBCLASSPROC(_nccalcsize_subclass_proc)
+
+
+def install_nccalcsize_fix() -> None:
+    """Call once at startup, alongside ensure_resizable_frame_style() -- see _nccalcsize_subclass_proc's own
+    comment for what this actually fixes and why."""
+    hwnd = _hwnd()
+    if not hwnd:
+        return
+    comctl32.SetWindowSubclass(hwnd, _nccalcsize_subclass_proc_ref, _NCCALCSIZE_SUBCLASS_ID, 0)
 
 
 def _minimize() -> None:
@@ -95,12 +167,22 @@ def _close(settings) -> None:
     hi.get_runner_params().app_shall_exit = True
 
 
+def _resync_mouse_up_after_native_loop() -> None:
+    # SendMessageW below blocks until the OS's own modal drag/resize loop exits on mouse-up -- that release
+    # never flows back through ImGui's normal input path (GLFW's callback never sees it, since Windows handled
+    # the whole gesture natively), so ImGui's own io.mouse_down[0] is left stuck true. The next real click then
+    # looks like "already held" to ImGui, so its down-transition never fires -- explains the every-other-attempt
+    # pattern reported live. By the time SendMessageW returns, the button is definitely up, so tell ImGui so.
+    imgui.get_io().add_mouse_button_event(0, False)
+
+
 def _start_native_drag() -> None:
     hwnd = _hwnd()
     if not hwnd:
         return
     user32.ReleaseCapture()
     user32.SendMessageW(hwnd, _WM_NCLBUTTONDOWN, _HTCAPTION, 0)
+    _resync_mouse_up_after_native_loop()
 
 
 def _start_native_resize() -> None:
@@ -109,12 +191,11 @@ def _start_native_resize() -> None:
         return
     user32.ReleaseCapture()
     user32.SendMessageW(hwnd, _WM_NCLBUTTONDOWN, _HTBOTTOMRIGHT, 0)
+    _resync_mouse_up_after_native_loop()
 
 
 def _bar_button(theme, str_id: str, icon: str, hover_color, size: float) -> bool:
-    """One title-bar glyph button: transparent until hovered, then a themed
-    fill (danger-red for Close, neutral for the rest) plus the icon, so
-    hover state is never carried by color alone."""
+    # Transparent until hovered, then a themed fill (danger-red for Close) plus the icon -- never color alone.
     imgui.push_id(str_id)
     imgui.push_style_color(imgui.Col_.button, (0.0, 0.0, 0.0, 0.0))
     imgui.push_style_color(imgui.Col_.button_hovered, hover_color)
@@ -147,10 +228,7 @@ def render(ctx: PanelContext) -> None:
     # icon/name drawn on top via the draw list (non-interactive, so it can
     # never steal the drag region's hover/click). ---
     imgui.invisible_button("##titlebar-drag", imgui.ImVec2(drag_w, bar_h))
-    # No double-click-to-maximize: the first mouse-down already fires
-    # _start_native_drag into a blocking Win32 move-loop, so a second click
-    # never arrives as a distinguishable double-click. Fixing that needs a
-    # real WM_NCHITTEST subclass, out of scope here.
+    # No double-click-to-maximize: mouse-down already fires a blocking native move-loop, so a second click never arrives.
     if imgui.is_item_activated():
         _start_native_drag()
 
@@ -183,27 +261,10 @@ def render(ctx: PanelContext) -> None:
 
 
 def render_resize_grip(ctx: PanelContext) -> None:
-    """Bottom-right resize handle, hand-rolled the same native-Win32 way
-    the title bar drag above is (`WM_NCLBUTTONDOWN`/`HT*`, handing the
-    whole drag off to Windows' own move-loop) instead of using Hello
-    ImGui's built-in `borderless_resizable` corner (left False in main.py).
-
-    That built-in implementation tracks its own manual drag state at the
-    ImGui level rather than handing off to the OS -- per its own docs, "a
-    drag zone is displayed at the bottom-right... when the mouse is over
-    it" -- and has a real, reproducible bug: clicking the corner could
-    start the window continuously following the cursor even after the
-    mouse button was released, needing a second click to stop it. Found
-    live 2026-09-17. The native WM_NCLBUTTONDOWN approach can't have this
-    class of bug -- once sent, Windows' own move-loop owns the drag
-    entirely until the OS itself sees the button released, the same
-    guarantee `_start_native_drag()` already relies on for the title bar.
-
-    Drawn every frame regardless of active panel (call this once from
-    shell.py's render_frame, same as titlebar.render()), positioned via the
-    main viewport's absolute screen rect so it sits in the true corner
-    regardless of which panel/child region is currently under it. Skipped
-    while maximized -- nothing to resize."""
+    # Bottom-right resize handle, hand-rolled via WM_NCLBUTTONDOWN/HT* (same as the title bar drag) instead of
+    # Hello ImGui's built-in borderless_resizable corner, which tracks drag state manually at the ImGui level and
+    # has a reproducible bug: the window can keep following the cursor after mouse-up, needing a second click to
+    # stop. Call once per frame regardless of active panel; skipped while maximized.
     if _is_maximized():
         return
 
@@ -212,20 +273,17 @@ def render_resize_grip(ctx: PanelContext) -> None:
     x = viewport.pos.x + viewport.size.x - _RESIZE_GRIP_SIZE
     y = viewport.pos.y + viewport.size.y - _RESIZE_GRIP_SIZE
 
-    imgui.set_cursor_screen_pos(imgui.ImVec2(x, y))
-    imgui.push_id("resize-grip")
-    imgui.invisible_button("##resize-grip", imgui.ImVec2(_RESIZE_GRIP_SIZE, _RESIZE_GRIP_SIZE))
-    hovered = imgui.is_item_hovered()
+    # Raw mouse position/click state, not an invisible_button's hover/activation -- this corner sits right where
+    # the main window's own (always-present) scrollbar track lives, and that scrollbar wins ImGui's normal
+    # item-hover resolution over anything placed here, silently swallowing the click instead of resizing.
+    mouse = imgui.get_io().mouse_pos
+    hovered = x <= mouse.x <= x + _RESIZE_GRIP_SIZE and y <= mouse.y <= y + _RESIZE_GRIP_SIZE
     if hovered:
         imgui.set_mouse_cursor(imgui.MouseCursor_.resize_nwse)
-    if imgui.is_item_activated():
-        _start_native_resize()
-    imgui.pop_id()
+        if imgui.is_mouse_clicked(0):
+            _start_native_resize()
 
-    # Minimal visual affordance -- three short diagonal lines, the same
-    # corner-resize-grip convention most desktop apps use, drawn on top of
-    # the invisible button so it stays discoverable without a hover-only
-    # reveal (unlike Hello ImGui's own version, which only appears on hover).
+    # Three diagonal lines, the usual corner-resize-grip convention -- always visible, not hover-only like Hello ImGui's own.
     draw_list = imgui.get_window_draw_list()
     color = imgui.get_color_u32(theme.accent_text if hovered else theme.border_strong)
     pad = 3.0

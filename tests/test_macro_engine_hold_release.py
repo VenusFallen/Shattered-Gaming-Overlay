@@ -1,22 +1,8 @@
-"""tests/test_macro_engine_hold_release.py -- kill-switch coverage for
-MacroEngine's Hold/Toggle sessions: releasing the trigger (or the macro
-getting disabled/removed, or the engine stopping) must never leave a key or
-mouse button physically down that a KEY_DOWN/MOUSE_DOWN step sent without
-its matching UP ever running.
-
-Found live 2026-09-11: a Hold session cancelled between an unmatched
-KEY_DOWN and its later KEY_UP step left the key stuck at the OS level, since
-nothing released it once the session stopped. KEY_TAP/MOUSE_CLICK need no
-such tracking -- see macro_engine.py's `_force_release_held()` docstring for
-why they always self-complete even when cut short.
-
-Exercises `_execute_steps()`/`_force_release_held()` directly for the
-deterministic unit-level behavior, and the real `_hold_loop()`/`_toggle_loop()`
-methods (called synchronously on the test's own thread, never spawned as a
-background thread) for the end-to-end path -- only `time.sleep` is
-monkeypatched, to control loop iteration count without a real wait.
-input_inject.send_key/send_mouse_button are monkeypatched so nothing here
-ever calls real SendInput.
+"""Kill-switch coverage for MacroEngine's Hold/Toggle sessions: releasing the trigger (or the macro getting
+disabled/removed, or the engine stopping) must never leave a key/mouse button physically down that a
+KEY_DOWN/MOUSE_DOWN step sent without its matching UP ever running. Exercises `_execute_steps()`/
+`_force_release_held()` directly, and the real `_hold_loop()`/`_toggle_loop()` methods with only
+`time.sleep` monkeypatched. input_inject.send_key/send_mouse_button are monkeypatched throughout.
 """
 
 from __future__ import annotations
@@ -28,7 +14,7 @@ import pytest
 
 import input_inject
 import macro_engine as macro_engine_module
-from app_state import MacroDef, MacroMode, MacroStep, MacroStepKind, MacrosState
+from app_state import MacroDef, MacroMode, MacroStep, MacroStepKind, MacrosState, SettingsState
 from input_inject import MouseButton
 from key_capture import KeyBind
 from macro_engine import MacroEngine, _MacroSnap, _RuntimeState, _StepSnap
@@ -43,9 +29,7 @@ def _stub_injection(monkeypatch):
 
 
 class _ScriptedCancelEvent:
-    """Returns a pre-programmed sequence of is_set() results, one per call --
-    lets a test place the "cancelled" transition at an exact point between
-    two steps without any real threading or waiting."""
+    """Returns a pre-programmed sequence of is_set() results, one per call, to place the "cancelled" transition at an exact point between two steps."""
 
     def __init__(self, results):
         self._results = list(results)
@@ -69,11 +53,11 @@ def _key_step(step_id: str, kind: MacroStepKind, vk: int) -> MacroStep:
 def test_execute_steps_interrupted_between_key_down_and_up_leaves_it_tracked():
     engine = MacroEngine()
     steps = (
-        _StepSnap(kind=MacroStepKind.KEY_DOWN, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0),
-        _StepSnap(kind=MacroStepKind.KEY_UP, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0),
+        _StepSnap(id="s1", kind=MacroStepKind.KEY_DOWN, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0, move_x=0, move_y=0, path_wobble_pct=0, move_speed_pct=50),
+        _StepSnap(id="s1", kind=MacroStepKind.KEY_UP, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0, move_x=0, move_y=0, path_wobble_pct=0, move_speed_pct=50),
     )
     macro = _MacroSnap(
-        id="m1", name="M", trigger_vk=0x51, mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
+        id="m1", name="M", trigger_vk=0x51, modifier_vks=(), mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
     )
     rt = _RuntimeState()
     # is_set() calls: before step1 (False) -> KEY_DOWN runs -> after step1
@@ -90,11 +74,11 @@ def test_execute_steps_interrupted_between_key_down_and_up_leaves_it_tracked():
 def test_execute_steps_interrupted_between_mouse_down_and_up_leaves_it_tracked():
     engine = MacroEngine()
     steps = (
-        _StepSnap(kind=MacroStepKind.MOUSE_DOWN, key_vk=None, mouse_button="Left", scroll_delta=120, delay_ms=0),
-        _StepSnap(kind=MacroStepKind.MOUSE_UP, key_vk=None, mouse_button="Left", scroll_delta=120, delay_ms=0),
+        _StepSnap(id="s1", kind=MacroStepKind.MOUSE_DOWN, key_vk=None, mouse_button="Left", scroll_delta=120, delay_ms=0, move_x=0, move_y=0, path_wobble_pct=0, move_speed_pct=50),
+        _StepSnap(id="s1", kind=MacroStepKind.MOUSE_UP, key_vk=None, mouse_button="Left", scroll_delta=120, delay_ms=0, move_x=0, move_y=0, path_wobble_pct=0, move_speed_pct=50),
     )
     macro = _MacroSnap(
-        id="m1", name="M", trigger_vk=0x51, mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
+        id="m1", name="M", trigger_vk=0x51, modifier_vks=(), mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
     )
     rt = _RuntimeState()
     cancel_event = _ScriptedCancelEvent([False, False, True])
@@ -109,11 +93,11 @@ def test_execute_steps_interrupted_between_mouse_down_and_up_leaves_it_tracked()
 def test_execute_steps_balanced_sequence_leaves_nothing_tracked():
     engine = MacroEngine()
     steps = (
-        _StepSnap(kind=MacroStepKind.KEY_DOWN, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0),
-        _StepSnap(kind=MacroStepKind.KEY_UP, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0),
+        _StepSnap(id="s1", kind=MacroStepKind.KEY_DOWN, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0, move_x=0, move_y=0, path_wobble_pct=0, move_speed_pct=50),
+        _StepSnap(id="s1", kind=MacroStepKind.KEY_UP, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0, move_x=0, move_y=0, path_wobble_pct=0, move_speed_pct=50),
     )
     macro = _MacroSnap(
-        id="m1", name="M", trigger_vk=0x51, mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
+        id="m1", name="M", trigger_vk=0x51, modifier_vks=(), mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
     )
     rt = _RuntimeState()
     cancel_event = _ScriptedCancelEvent([False, False, False, False])
@@ -128,9 +112,9 @@ def test_key_tap_always_completes_even_when_cut_short():
     # KEY_TAP's own internal wait being interrupted must NOT skip its "up" --
     # it's self-contained, unlike a raw KEY_DOWN/KEY_UP pair.
     engine = MacroEngine()
-    steps = (_StepSnap(kind=MacroStepKind.KEY_TAP, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0),)
+    steps = (_StepSnap(id="s1", kind=MacroStepKind.KEY_TAP, key_vk=0x41, mouse_button="Left", scroll_delta=120, delay_ms=0, move_x=0, move_y=0, path_wobble_pct=0, move_speed_pct=50),)
     macro = _MacroSnap(
-        id="m1", name="M", trigger_vk=0x51, mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
+        id="m1", name="M", trigger_vk=0x51, modifier_vks=(), mode=MacroMode.HOLD, enabled=True, humanize_jitter_pct=0, steps=steps
     )
     rt = _RuntimeState()
     cancel_event = _ScriptedCancelEvent([False, False])
@@ -187,7 +171,7 @@ def test_hold_loop_force_releases_unmatched_key_down_when_trigger_released(monke
         enabled=True,
         steps=[_key_step("s1", MacroStepKind.KEY_DOWN, 0x41)],  # no matching KEY_UP at all
     )
-    engine.update_snapshot(MacrosState(macros=[macro_def]))
+    engine.update_snapshot(MacrosState(macros=[macro_def]), SettingsState())
 
     rt = engine._get_runtime("m1")
     rt.held = True
@@ -220,7 +204,7 @@ def test_hold_loop_releases_nothing_extra_for_a_balanced_macro(monkeypatch):
             _key_step("s2", MacroStepKind.KEY_UP, 0x41),
         ],
     )
-    engine.update_snapshot(MacrosState(macros=[macro_def]))
+    engine.update_snapshot(MacrosState(macros=[macro_def]), SettingsState())
 
     rt = engine._get_runtime("m1")
     rt.held = True
@@ -250,7 +234,7 @@ def test_toggle_loop_force_releases_unmatched_mouse_down_when_toggled_off(monkey
         enabled=True,
         steps=[MacroStep(id="s1", kind=MacroStepKind.MOUSE_DOWN, mouse_button="Left")],
     )
-    engine.update_snapshot(MacrosState(macros=[macro_def]))
+    engine.update_snapshot(MacrosState(macros=[macro_def]), SettingsState())
 
     rt = engine._get_runtime("m1")
     rt.toggle_running = True
@@ -281,7 +265,7 @@ def test_hold_loop_force_releases_when_macro_disabled_mid_hold(monkeypatch):
         steps=[_key_step("s1", MacroStepKind.KEY_DOWN, 0x41)],
     )
     macros_state = MacrosState(macros=[macro_def])
-    engine.update_snapshot(macros_state)
+    engine.update_snapshot(macros_state, SettingsState())
 
     rt = engine._get_runtime("m1")
     rt.held = True
@@ -292,7 +276,7 @@ def test_hold_loop_force_releases_when_macro_disabled_mid_hold(monkeypatch):
         calls["n"] += 1
         if calls["n"] == 1:
             macro_def.enabled = False
-            engine.update_snapshot(macros_state)
+            engine.update_snapshot(macros_state, SettingsState())
 
     monkeypatch.setattr(macro_engine_module.time, "sleep", fake_sleep)
 
@@ -324,13 +308,7 @@ def test_stop_force_releases_key_left_tracked_by_a_runtime():
 
 
 def test_stop_releases_unmatched_key_down_from_a_genuinely_running_hold_thread():
-    """Same guarantee as the test above, but through the real public path --
-    a real trigger-down via handle_effective_event(), a real background
-    thread spawned by _ensure_thread()/_hold_loop() looping on real
-    threading.Event/time.sleep (only `_LOOP_YIELD_SEC`, never mocked) --
-    rather than a hand-built `_RuntimeState` with `thread = None`. Covers the
-    actual join()-then-release ordering in stop() under real thread
-    scheduling, not just the logic in isolation."""
+    """Same guarantee as the test above, but through the real public path -- a real background thread and real threading.Event/time.sleep, covering the actual join()-then-release ordering in stop()."""
     engine = MacroEngine()
     engine.start()
     macro_def = MacroDef(
@@ -341,7 +319,7 @@ def test_stop_releases_unmatched_key_down_from_a_genuinely_running_hold_thread()
         enabled=True,
         steps=[_key_step("s1", MacroStepKind.KEY_DOWN, 0x41)],  # no matching KEY_UP at all
     )
-    engine.update_snapshot(MacrosState(macros=[macro_def]))
+    engine.update_snapshot(MacrosState(macros=[macro_def]), SettingsState())
 
     engine.handle_effective_event(EffectiveInputEvent(vk_code=0x51, up=False))
 
@@ -360,12 +338,8 @@ def test_stop_releases_unmatched_key_down_from_a_genuinely_running_hold_thread()
 
 
 # ---------------------------------------------------------------------------
-# handle_gate_closed() -- registered as remapper.py's add_gate_close_listener
-# callback. A live Hold/Toggle session has no other way to learn its trigger
-# was released while the targeted process was unfocused, since remapper.py
-# stops publishing events entirely while its gate is closed. Found live
-# 2026-09-12: without this, a Hold macro released mid-focus-loss kept
-# re-firing into whatever now had focus, indefinitely.
+# handle_gate_closed() -- registered as remapper.py's add_gate_close_listener callback; the only way a
+# live Hold/Toggle session learns its trigger was released while the targeted process was unfocused.
 # ---------------------------------------------------------------------------
 
 
@@ -380,7 +354,7 @@ def test_handle_gate_closed_stops_a_running_hold_session():
         enabled=True,
         steps=[_key_step("s1", MacroStepKind.KEY_DOWN, 0x41)],  # no matching KEY_UP at all
     )
-    engine.update_snapshot(MacrosState(macros=[macro_def]))
+    engine.update_snapshot(MacrosState(macros=[macro_def]), SettingsState())
     engine.handle_effective_event(EffectiveInputEvent(vk_code=0x51, up=False))
 
     deadline = time.monotonic() + 2.0
@@ -391,10 +365,7 @@ def test_handle_gate_closed_stops_a_running_hold_session():
     rt = engine._get_existing_runtime("m1")
     assert rt is not None and rt.held is True
 
-    # Simulate the trigger key's release having been swallowed by remapper.py
-    # because the gate was closed at the time -- handle_effective_event()
-    # never gets called for it. handle_gate_closed() is the only thing that
-    # can still stop this session.
+    # Simulate the trigger release having been swallowed by remapper.py's closed gate -- handle_gate_closed() is the only thing that can still stop this session.
     engine.handle_gate_closed()
 
     deadline = time.monotonic() + 2.0
@@ -424,7 +395,7 @@ def test_handle_gate_closed_stops_a_running_toggle_session():
         enabled=True,
         steps=[MacroStep(id="s1", kind=MacroStepKind.MOUSE_DOWN, mouse_button="Left")],
     )
-    engine.update_snapshot(MacrosState(macros=[macro_def]))
+    engine.update_snapshot(MacrosState(macros=[macro_def]), SettingsState())
     # Toggle arms on release, per _on_trigger's TOGGLE branch.
     engine.handle_effective_event(EffectiveInputEvent(vk_code=0x51, up=True))
 

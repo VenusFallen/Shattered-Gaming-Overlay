@@ -1,22 +1,10 @@
 """hud_overlay.py -- HUD overlay window: separate, non-injecting,
 click-through top-level window that DWM composites over the game via
-DirectComposition. Never hooks a game's own swap chain; nothing here is
-injected into another process.
-
-Renders the accessibility crosshair, Stats box (CPU/GPU/VRAM/RAM/FPS plus a
-1%/0.1% frame-time low readout and a small live frame-time graph), and
-module status badges, via overlay_renderer.Renderer's GDI-backed text
-pipeline.
-
-Runs entirely on its own background thread. The Companion window pushes
-plain-data snapshots into this instance under a lock, once per its own frame
-(update_crosshair/update_stats/update_indicators/update_theme); the render
-thread reads them under the same lock. Live dataclass instances never cross
-the thread boundary, only immutable snapshots.
-
-Visibility is never gated by window focus or by the Remapper/Macro engine's
-window-filter state -- each element renders whenever its own `enabled` flag
-is set, regardless of which window has OS focus.
+DirectComposition. Never hooks a game's own swap chain or focus state --
+each element renders whenever its own `enabled` flag is set. Runs entirely
+on its own background thread; the Companion window pushes immutable
+plain-data snapshots into it under a lock once per frame
+(update_crosshair/update_stats/update_indicators/update_theme).
 """
 
 from __future__ import annotations
@@ -170,11 +158,8 @@ class _StatsSnapshot:
     ram_total_gb: Optional[float] = None
     fps: Optional[float] = None
     fps_error: Optional[str] = None
-    # 1%/0.1% lows stay gated under show_fps, same as the other compact
-    # stat lines -- no separate toggle for those. The sparkline itself has
-    # its own show_fps_graph toggle (see _draw_stats_box). fps_frame_time_history
-    # is raw msBetweenPresents ms values, oldest first -- converted to fps at
-    # draw time, same as stats_poller.StatsSnapshot stores it.
+    # 1%/0.1% lows stay gated under show_fps -- no separate toggle. fps_frame_time_history is raw ms values,
+    # oldest first, converted to fps at draw time.
     fps_1pct_low: Optional[float] = None
     fps_0_1pct_low: Optional[float] = None
     fps_frame_time_history: tuple = ()
@@ -202,10 +187,7 @@ _DEFAULT_INDICATOR_SNAPSHOT = _IndicatorSnapshot()
 
 @dataclass(frozen=True)
 class _ThemeSnapshot:
-    """The theme.Theme fields the Stats box / status badges need to track
-    the Companion window's active theme (including live Color Cycle drift).
-    Defaults to theme.DARK's values so nothing renders a placeholder color
-    before the first real update_theme() call."""
+    # Defaults to theme.DARK's values so nothing renders a placeholder color before the first real update_theme() call.
 
     accent: tuple = theme_module.DARK.accent
     accent_text: tuple = theme_module.DARK.accent_text
@@ -257,16 +239,8 @@ def _corner_origin(corner: str, margin: float, w: float, h: float, sw: float, sh
 
 
 class HudOverlay:
-    """The click-through HUD overlay window + its own DX11/DComp swap chain.
-
-    Public thread-safe methods (callable from the Companion window's thread):
-      start()
-      stop()
-      update_crosshair(crosshair_state)
-      update_stats(stats_hud_state, stats_poller_snapshot)
-      update_indicators(status_indicators_state, remap_count, macro_count)
-      update_theme(theme)
-    """
+    # The click-through HUD overlay window + its own DX11/DComp swap chain. start/stop/update_* are all
+    # thread-safe and callable from the Companion window's own thread.
 
     _CLASS_NAME = "ShatteredGamingOverlayHUD"
     _WINDOW_TITLE = "Shattered Gaming Overlay HUD"
@@ -321,9 +295,7 @@ class HudOverlay:
         self._thread = None
 
     def update_crosshair(self, crosshair_state) -> None:
-        """Called once per Companion-window frame. Copies plain-data fields
-        into an immutable snapshot under a lock -- the render thread never
-        touches the live CrosshairState instance."""
+        # Called once per Companion-window frame; copies fields into an immutable snapshot under a lock.
         snap = _CrosshairSnapshot(
             enabled=bool(crosshair_state.enabled),
             style=str(crosshair_state.style),
@@ -336,9 +308,7 @@ class HudOverlay:
             self._snapshot = snap
 
     def update_stats(self, stats_hud_state, stats_poller_snapshot) -> None:
-        """Called once per Companion-window frame. Combines StatsHudState's
-        toggles/style with the latest StatsSnapshot into one immutable
-        snapshot under a lock."""
+        # Combines StatsHudState's toggles/style with the latest StatsSnapshot into one immutable snapshot under a lock.
         snap = _StatsSnapshot(
             enabled=bool(stats_hud_state.enabled),
             show_cpu=bool(stats_hud_state.show_cpu),
@@ -370,9 +340,7 @@ class HudOverlay:
             self._stats_snapshot = snap
 
     def update_indicators(self, status_indicators_state, remap_count: int, macro_count: int) -> None:
-        """Called once per Companion-window frame. `remap_count`/`macro_count`
-        are live counts of enabled entries, computed by the caller -- this
-        module never touches app_state directly."""
+        # `remap_count`/`macro_count` are live enabled-entry counts computed by the caller -- this module never touches app_state directly.
         snap = _IndicatorSnapshot(
             enabled=bool(status_indicators_state.enabled),
             show_remap_badge=bool(status_indicators_state.show_remap_badge),
@@ -386,9 +354,7 @@ class HudOverlay:
             self._indicator_snapshot = snap
 
     def update_theme(self, theme) -> None:
-        """Called once per frame from shell.py after it resolves the active
-        theme (including live Color Cycle drift), so the Stats box border
-        and status badge rings track it the same way the rest of the UI does."""
+        # Called once per frame from shell.py after it resolves the active theme, so the Stats box/badges track it too.
         snap = _ThemeSnapshot(
             accent=tuple(theme.accent),
             accent_text=tuple(theme.accent_text),
@@ -470,11 +436,8 @@ class HudOverlay:
         self._sw = sw
         self._sh = sh
 
-        # WS_EX_NOREDIRECTIONBITMAP: no GDI surface, DComp owns the content
-        # and DWM reads the DXGI swap chain directly. WS_EX_LAYERED is
-        # required for real click-through on this window type even though
-        # SetLayeredWindowAttributes/UpdateLayeredWindow are never called --
-        # WS_EX_TRANSPARENT alone isn't sufficient here.
+        # WS_EX_LAYERED is required for real click-through on this window type even though
+        # SetLayeredWindowAttributes/UpdateLayeredWindow are never called -- WS_EX_TRANSPARENT alone isn't enough.
         ex_style = (_WS_EX_TOPMOST | _WS_EX_NOACTIVATE | _WS_EX_TOOLWINDOW
                     | _WS_EX_TRANSPARENT | _WS_EX_NOREDIRECTIONBITMAP
                     | _WS_EX_LAYERED)
@@ -657,10 +620,7 @@ class HudOverlay:
             return
 
         if style == "Circle + Dot":
-            # `gap` is an independent offset on top of `size` here -- moves
-            # the ring closer to/further from the center dot without
-            # changing the dot's own radius (still size*0.15 below) or the
-            # ring's thickness (`thick`, set by the Thickness slider).
+            # `gap` offsets the ring from the center dot without changing the dot's own radius or the ring's thickness.
             ring_radius = size + gap
             r.draw_circle(cx, cy, ring_radius, bg, thickness=thick + outline * 2)
             r.draw_circle(cx, cy, ring_radius, fg, thickness=thick)
@@ -749,10 +709,8 @@ class HudOverlay:
         text_w = max(w for w, _h in sizes) if sizes else 0
         line_h = sizes[0][1] if sizes else font_size
 
-        # Graph sits below the text lines inside the same box, width-matched
-        # to the widest line rather than given its own box -- a glance-sized
-        # strip, not a chart that dominates the readout (existing FPS number
-        # stays the primary display).
+        # Graph sits below the text lines inside the same box, width-matched to the widest line -- a glance-sized
+        # strip, not a chart that dominates the readout.
         graph_h = 24.0 * scale if len(graph_fps) >= 2 else 0.0
 
         lines_h = len(lines) * line_h + max(0, len(lines) - 1) * line_gap
@@ -773,19 +731,12 @@ class HudOverlay:
             ty += h + line_gap
 
         if graph_h > 0:
-            # `ty` already sits exactly one line_gap below the last line
-            # (the loop above adds a trailing line_gap even after the final
-            # line) -- box_h accounted for that same gap, so no further
-            # offset needed here.
+            # `ty` already sits one line_gap below the last line (box_h accounted for that same gap already).
             self._draw_fps_graph(r, x + pad, ty, text_w, graph_h, graph_fps, theme)
 
     def _draw_fps_graph(self, r: Renderer, x: float, y: float, w: float, h: float,
                          values: list, theme: _ThemeSnapshot) -> None:
-        """Small fps-equivalent sparkline (recent stats_poller frame-time
-        history, converted to fps) -- plain polyline, no area fill, thin
-        border only. Cheap: len(values)-1 draw_line calls plus one
-        draw_rect, redrawn every overlay frame alongside the rest of the
-        Stats box."""
+        # Small fps-equivalent sparkline: plain polyline + thin border, no area fill -- cheap, redrawn every frame.
         n = len(values)
         if n < 2 or w <= 0 or h <= 0:
             return

@@ -1,8 +1,4 @@
-"""panels/about.py -- About panel: what the program is, version, and credit.
-
-Split out of settings.py into its own top-level nav entry (was previously a
-card inside Settings).
-"""
+"""panels/about.py -- About panel: what the program is, version, and credit."""
 
 from __future__ import annotations
 
