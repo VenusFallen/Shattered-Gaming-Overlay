@@ -16,7 +16,33 @@ Two sections, two different jobs. **Remapping** is a plain 1:1 swap — bind any
 
 Record a sequence and play it back with Once, Hold, or Toggle triggers. Playback timing is humanized rather than robotically exact. Delay steps take any value you want — drag to adjust or type an exact number in, no arbitrary cap.
 
+Triggers can be a single key or a combo like **Shift + R** — press the whole combination once while binding and it's captured in one go. Steps can be recorded live or built by hand, and the up/down arrows at the left of each step let you reorder them without deleting and re-adding anything.
+
 ![Macros](assets/screenshots/macros.png)
+
+### Soundboard
+
+Import your own sound clips (WAV, MP3, OGG, or FLAC), give each one a hotkey, and play it on demand — a sound fires the moment you press its key. Each clip has its own volume slider, an enabled toggle, and a Preview button so you can audition it without leaving the app. Clips can overlap, so hitting a second hotkey doesn't cut off the first. If a file gets moved or deleted, the clip is flagged in the panel instead of failing silently.
+
+Pick which speakers or output the sounds play through from the **Output device** dropdown at the top of the panel; it defaults to your system default. Clips are referenced by their location on disk rather than copied, and the soundboard is saved separately from profiles, so switching profiles never changes your sound list. Like Remapper and Macros, hotkeys go inert when a targeted window loses focus.
+
+![Soundboard](assets/screenshots/soundboard.png)
+
+#### Using the soundboard in voice chat
+
+Playing a sound so *other people* hear it — in Discord, in-game voice, on a stream — needs a virtual audio cable. Shattered Gaming Overlay deliberately doesn't install an audio driver of its own (same reasoning as [Why no driver](#why-no-driver)), so you bring a free third-party one such as [VB-CABLE](https://vb-audio.com/Cable/) or [VoiceMeeter](https://vb-audio.com/Voicemeeter/). A virtual cable is a fake device with two ends: whatever is played into its "input" comes out of its "output", where any app can pick it up as if it were a microphone.
+
+1. Install the virtual cable and reboot if the installer asks.
+2. In the Soundboard panel, set **Output device** to the cable's playback end — **CABLE Input** for VB-CABLE.
+3. In Discord, your game's voice chat, or OBS, set the microphone to the cable's recording end — **CABLE Output**.
+4. Press a sound's hotkey. Your teammates hear it.
+
+Two things worth knowing:
+
+- **You won't hear it yourself by default**, because the sound is going into the cable rather than your speakers. To monitor it, open Windows **Sound** settings → **Recording** → double-click **CABLE Output** → **Listen** tab → tick **Listen to this device** and pick your headphones.
+- **Voice apps only listen to one microphone**, so with the cable selected as your mic, your real voice is no longer being sent. To transmit both, use a mixer like VoiceMeeter to combine your real mic and the cable into a single virtual microphone, and point your voice app at that instead.
+
+If you only want to hear sounds yourself, none of this is needed — leave the output on **(system default)** or pick your headphones.
 
 ### Profiles
 
