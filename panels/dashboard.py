@@ -8,6 +8,7 @@ from __future__ import annotations
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
+import icons
 import widgets
 from panel_context import PanelContext
 
@@ -44,7 +45,7 @@ def render(ctx: PanelContext) -> None:
     theme = ctx.theme
     state = ctx.state
 
-    imgui.text(f"{fa.ICON_FA_TACHOMETER_ALT}  Dashboard")
+    imgui.text(f"{icons.TACHOMETER}  Dashboard")
     widgets.muted_text(
         theme,
         "At a glance. Everything below reflects live state from its own panel -- "
@@ -118,7 +119,7 @@ def render(ctx: PanelContext) -> None:
     with widgets.card(theme, "dash-overlay", size=(0, 0)):
         imgui.text_colored(theme.text_secondary, f"{fa.ICON_FA_CROSSHAIRS}  OVERLAY")
         imgui.spacing()
-        _overlay_row(ctx, fa.ICON_FA_TACHOMETER_ALT, "Stats HUD", o.stats_hud.enabled)
+        _overlay_row(ctx, icons.TACHOMETER, "Stats HUD", o.stats_hud.enabled)
         imgui.same_line()
         imgui.dummy(imgui.ImVec2(24, 0))
         imgui.same_line()

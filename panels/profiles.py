@@ -111,7 +111,7 @@ def render(ctx: PanelContext) -> None:
         imgui.set_tooltip("Saves the CURRENT Remapper/Macros/Window Select state under a new profile name.")
 
     imgui.same_line()
-    if imgui.button(f"{fa.ICON_FA_FILE_IMPORT}  Import Profile"):
+    if imgui.button(f"{fa.ICON_FA_DOWNLOAD}  Import Profile"):
         # Native Open dialog is blocking -- fine, only fires on this click.
         path = file_dialog.show_open_dialog()
         if path:
@@ -152,7 +152,7 @@ def render(ctx: PanelContext) -> None:
                     imgui.set_tooltip("Overwrite this profile with the CURRENT live Remapper/Macros/Window Select state.")
 
             imgui.same_line()
-            if imgui.button(f"{fa.ICON_FA_FILE_EXPORT}  Export"):
+            if imgui.button(f"{fa.ICON_FA_UPLOAD}  Export"):
                 default_name = profiles_engine.suggest_export_filename(ctx.state, profile.id)
                 path = file_dialog.show_save_dialog(default_filename=default_name)
                 if path:

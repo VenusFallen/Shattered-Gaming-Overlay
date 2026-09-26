@@ -5,6 +5,7 @@ from __future__ import annotations
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
+import icons
 import widgets
 from panel_context import PanelContext
 from version import VERSION
@@ -29,4 +30,4 @@ def render(ctx: PanelContext) -> None:
         widgets.muted_text(theme, f"Version {VERSION}")
         widgets.muted_text(theme, "Made by VenusFallen")
         imgui.spacing()
-        widgets.hyperlink(theme, f"{fa.ICON_FA_EXTERNAL_LINK_ALT}  github.com/VenusFallen", _GITHUB_URL)
+        widgets.hyperlink(theme, f"{icons.EXTERNAL_LINK}  github.com/VenusFallen", _GITHUB_URL)

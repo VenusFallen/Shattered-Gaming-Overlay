@@ -10,6 +10,7 @@ from __future__ import annotations
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
+import icons
 import widgets
 from panel_context import PanelContext
 
@@ -83,7 +84,7 @@ def _render_stats_hud(ctx: PanelContext) -> None:
     s = ctx.state.overlay.stats_hud
     with widgets.card(theme, "overlay-stats-hud", size=(0, 0)):
         _, s.enabled = widgets.labeled_toggle(
-            theme, f"{fa.ICON_FA_TACHOMETER_ALT}  Stats HUD", s.enabled, ctx.state.settings.reduce_motion
+            theme, f"{icons.TACHOMETER}  Stats HUD", s.enabled, ctx.state.settings.reduce_motion
         )
         widgets.muted_text(theme, "CPU/GPU usage & temp, VRAM, RAM, FPS of the focused window.")
         if not s.enabled:

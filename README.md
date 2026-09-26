@@ -57,8 +57,6 @@ Save named configs per game — Remapper, Macros, window targeting, and Overlay 
 
 ![Profiles](assets/screenshots/profiles.png)
 
-*(One profile's row blurred for privacy — it just names a specific game.)*
-
 ### Overlay
 
 A passive HUD that sits over the game: CPU/GPU load and temps, VRAM/RAM, FPS with 1% and 0.1% lows plus a live graph, an accessibility crosshair, and status indicators for what's currently active. It's a separate, click-through window — never a hook into the game's own renderer, and never something you can accidentally interact with mid-match.

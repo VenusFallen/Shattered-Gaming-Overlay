@@ -10,6 +10,7 @@ from __future__ import annotations
 from imgui_bundle import icons_fontawesome_4 as fa
 from imgui_bundle import imgui
 
+import icons
 import theme as theme_module
 import titlebar
 from app_state import AppState
@@ -24,7 +25,7 @@ _SIDEBAR_WIDTH = 220.0
 # (see AppState.active_panel). Window Select lives inside Settings as a
 # card now, not its own tab (panels/window_select.py::render_section).
 _NAV_ITEMS = (
-    ("dashboard", fa.ICON_FA_TACHOMETER_ALT, "Dashboard"),
+    ("dashboard", icons.TACHOMETER, "Dashboard"),
     ("overlay", fa.ICON_FA_CROSSHAIRS, "Overlay"),
     ("macros", fa.ICON_FA_LIST_OL, "Macros"),
     ("remapper", fa.ICON_FA_KEYBOARD, "Remapper"),
