@@ -4,8 +4,8 @@ __pycache__/
 build/
 dist/
 # ShatteredGamingOverlay.spec is a real, hand-crafted PyInstaller build
-# input (see build-agent's ShatteredGamingOverlay.spec), not throwaway
-# boilerplate -- explicitly un-ignored below so it's actually tracked.
+# input, not throwaway boilerplate -- explicitly un-ignored below so it's
+# actually tracked.
 *.spec
 !ShatteredGamingOverlay.spec
 # Inno Setup build output (ShatteredGamingOverlay_Setup.exe,
@@ -20,8 +20,21 @@ venv/
 # equivalent) -- regenerated on launch, not source.
 *.ini
 
-# Agent behavior rules -- local to this machine, not shared project config.
-agent-rules.md
+# Code-signing certificates, private keys, and environment secrets -- must never be committed.
+*.pfx
+*.p12
+*.pem
+*.key
+*.snk
+.env
+.env.*
 
-# Claude Code project config -- local to this machine, not shared project config.
-.claude/
+# Editor, coverage, and OS leftovers.
+.vscode/
+.idea/
+.coverage
+htmlcov/
+Thumbs.db
+desktop.ini
+*.bak
+*.tmp

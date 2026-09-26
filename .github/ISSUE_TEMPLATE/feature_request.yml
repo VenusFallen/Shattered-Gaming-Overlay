@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest something that would make the app more useful or more accessible
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is an accessibility-focused tool, so requests that remove a barrier to playing are especially welcome. Please check the ["What's next" list](https://github.com/VenusFallen/Shattered-Gaming-Overlay#whats-next) first to see if it's already planned.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you trying to solve?
+      description: Describe the situation or barrier rather than the solution. Which game or task, and what gets in your way?
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: What would you like to see?
+      description: How do you imagine it working?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today instead?
+      description: Any workaround or other tool you use, and where it falls short.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the app?
+      options:
+        - Remapper
+        - Macros
+        - Soundboard
+        - Profiles
+        - Window targeting
+        - Overlay / HUD
+        - Settings or themes
+        - Installer or updater
+        - New area
+    validations:
+      required: true

@@ -1,0 +1,81 @@
+name: Bug report
+description: Something isn't working the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. Please check the [FAQ](https://github.com/VenusFallen/Shattered-Gaming-Overlay#faq) and existing issues first, since your question may already be answered.
+  - type: input
+    id: version
+    attributes:
+      label: App version
+      description: Shown in the title bar and in the About panel, for example 1.7.0.
+      placeholder: "1.7.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Press Win + R, type winver, and copy the version and build number.
+      placeholder: "Windows 11, version 24H2, build 26100"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part of the app?
+      options:
+        - Remapper
+        - Macros
+        - Soundboard
+        - Profiles
+        - Window targeting
+        - Overlay / HUD
+        - Settings or themes
+        - Installer or updater
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe what you saw. Screenshots help a lot, and you can paste them straight into this box.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The smallest set of steps that makes it happen every time, if you can find one.
+      placeholder: |
+        1. Open the Macros panel
+        2. ...
+        3. ...
+  - type: input
+    id: game
+    attributes:
+      label: Game or app involved
+      description: If this happens in a specific game, name it and any anti-cheat it uses (for example Easy Anti-Cheat, BattlEye, Vanguard). Leave blank if it isn't game-specific.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: |
+        For installer or update problems, the update log is in `%LOCALAPPDATA%\Shattered Gaming Overlay\logs`, so attach the newest file there.
+        If you attach `profiles.json` or `settings.json`, check them first, because they can contain game executable names and file paths.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I read the FAQ and searched existing issues.
+          required: true
